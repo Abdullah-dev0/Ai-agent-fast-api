@@ -5,11 +5,11 @@ import { redirect } from "next/navigation";
 import { auth } from "./auth";
 
 export type User = {
-  id: string;
-  name: string;
-  email: string;
-  image: string | null;
-  createdAt: Date;
+	id: string;
+	name: string;
+	email: string;
+	image: string | null;
+	createdAt: Date;
 };
 
 /**
@@ -21,24 +21,15 @@ export type User = {
  * and no way to leak one user's data to another.
  */
 export const getUser = cache(async (): Promise<User | null> => {
-  const session = await auth.api.getSession({ headers: await headers() });
-
-  // Watch the terminal. However many components call getUser(), this prints
-  // once per render pass. With cacheComponents on, Next renders a full page
-  // load in two passes, so you see two lines; with it off you see one.
-  console.log("[getUser] session lookup ->", session?.user.email ?? "anonymous");
-
-  if (!session) return null;
-
-  // Return only what the UI displays. Anything passed to a client
-  // component is sent to the browser.
-  const { id, name, email, image, createdAt } = session.user;
-  return { id, name, email, image: image ?? null, createdAt };
+	const session = await auth.api.getSession({ headers: await headers() });
+	if (!session) return null;
+	const { id, name, email, image, createdAt } = session.user;
+	return { id, name, email, image: image ?? null, createdAt };
 });
 
 /** For pages and actions that must be signed in. This is the real auth check. */
 export async function requireUser(): Promise<User> {
-  const user = await getUser();
-  if (!user) redirect("/sign-in");
-  return user;
+	const user = await getUser();
+	if (!user) redirect("/sign-in");
+	return user;
 }

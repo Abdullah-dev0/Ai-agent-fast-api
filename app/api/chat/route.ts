@@ -54,9 +54,23 @@ export async function GET(request: Request) {
 	// After a reload, useChat rejoins a reply that is still streaming.
 	const runId = new URL(request.url).searchParams.get("runId");
 	if (runId) {
-		const run = await chatPersistence.stores.runs?.get(runId);
+		const runs = chatPersistence.stores.runs;
+		const run = await runs?.get(runId);
 		if (run?.threadId !== threadId) return new Response("Not found", { status: 404 });
-		return resumeServerSentEventsResponse({ adapter: memoryStream(request) });
+
+		// The log lives in this process's memory, so a server restart loses it while
+		// the database still says "running". A live run logs within ~50ms; an empty
+		// log on a run older than 5s is dead. Mark it failed so the page stops rejoining.
+		const log = memoryStream(request);
+		if ((await log.snapshot()).length === 0 && Date.now() - run.startedAt > 5000) {
+			await runs?.update(runId, {
+				status: "failed",
+				finishedAt: Date.now(),
+				error: { message: "The server restarted before the reply finished." },
+			});
+			return new Response("Not found", { status: 404 });
+		}
+		return resumeServerSentEventsResponse({ adapter: log });
 	}
 
 	// On mount, useChat loads the chat.
