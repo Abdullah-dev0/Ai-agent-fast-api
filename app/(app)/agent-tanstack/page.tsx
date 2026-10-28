@@ -12,7 +12,7 @@ export default function AgentTanstackPage() {
 		<div className="flex flex-col gap-4">
 			<h1 className="text-2xl font-semibold">Agent (TanStack useChat)</h1>
 			<p className="text-sm text-zinc-500">
-				The same Python agent as /agent, called straight from the browser with TanStack&apos;s useChat.
+				A LangGraph agent in Python (agent-server/), called straight from the browser with TanStack&apos;s useChat.
 			</p>
 			<Suspense fallback={<p className="text-sm text-zinc-500">Loading...</p>}>
 				<UserAgent />

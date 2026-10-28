@@ -49,6 +49,6 @@ mount `useChat({ persistence: true })` reloads it with `GET /api/chat?threadId=`
 
 ## Python agent (agent-server/)
 
-A LangGraph agent with Gemini and tools, served by FastAPI, used by the `/agent`
-(CopilotKit) and `/agent-tanstack` (TanStack useChat) pages. See
+A LangGraph agent with Gemini and tools, served by FastAPI, used by the
+`/agent-tanstack` page (TanStack useChat). See
 [agent-server/README.md](agent-server/README.md) for how it works and how to run it.

@@ -1,8 +1,7 @@
 # Agent server (Python)
 
 A LangGraph agent that uses Gemini and three tools, served by FastAPI. The
-Next.js app talks to it from two pages, so you can compare two ways of building
-the chat screen.
+Next.js app's `/agent-tanstack` page talks to it with TanStack's `useChat`.
 
 ## Run it
 
@@ -15,8 +14,8 @@ uv sync              # install the Python packages (first time only)
 uv run main.py       # agent on http://127.0.0.1:8123
 ```
 
-Then, in the project root, `npm run dev`, sign in and open **Agent** or
-**Agent (TanStack)** in the top menu.
+Then, in the project root, `npm run dev`, sign in and open **Agent (TanStack)**
+in the top menu.
 
 ## The files
 
@@ -49,16 +48,15 @@ used, because it runs the agent inside the response.
 ## How one message travels
 
 ```
-Browser ──> Next.js /api/copilotkit ──> FastAPI POST /agent ──> LangGraph agent ──> Gemini
-  (CopilotKit page)                       (streams AG-UI events back)        └──> tools
-
-Browser ─────────────────────────────> FastAPI POST /agent   (TanStack page, no Next.js route)
+Browser ──> FastAPI POST /agent ──> LangGraph agent ──> Gemini
+  (TanStack page,  (streams AG-UI events back)   └──> tools
+   no Next.js route)
 ```
 
 **AG-UI** is the shared language: a standard list of streamed events ("run
 started", "a piece of text", "tool called", "run finished"). `ag-ui-langgraph`
-turns LangGraph's output into those events, and both CopilotKit and TanStack's
-`useChat` read them. That is why one Python server works with both pages.
+turns LangGraph's output into those events, and TanStack's `useChat` reads
+them. Any other AG-UI client could use the same server.
 
 ## The agent, step by step (`agent.py`)
 
@@ -78,14 +76,9 @@ START -> call_model -> (asked for tools?) -> run_tools -> back to call_model
 | What | Where | Survives |
 |---|---|---|
 | The agent's memory of a conversation | Postgres, in LangGraph's own tables (`checkpoints`, `checkpoint_writes`, `checkpoint_blobs`, `checkpoint_migrations`), created by `checkpointer.setup()` | Everything: reloads and restarts |
-| The chat shown on the CopilotKit page | Next.js memory (`InMemoryAgentRunner`) | Page reloads, **not** a Next.js restart |
 | The chat shown on the TanStack page | Loaded from the agent's Postgres memory (`GET /agent?threadId=`, `persistence: true`) | Everything: reloads and restarts |
 
-So after a restart the screen can be empty while the agent still remembers
-(ask it "what did I ask you earlier?"). Each user has a main thread,
-`copilot:<user id>` (and `tanstack:<user id>`). **+ New chat** on `/agent`
-opens `/agent?thread=<uuid>`, which is the thread `copilot:<user id>:<uuid>`:
-a fresh conversation, and the URL keeps you in it after a reload.
+Each user has one thread, `tanstack:<user id>`.
 
 The TanStack page loads its chat from the agent on every page load (`history.py`).
 Tool results are saved with the id TanStack gives them (`tool-<call id>`, see
@@ -96,23 +89,12 @@ Separately, Next.js keeps a page you navigate away from alive in the background
 (`cacheComponents` uses React `<Activity>`), so going back through the menu shows
 the page exactly as you left it, even before any reload.
 
-## CopilotKit or TanStack?
-
-| | CopilotKit (`/agent`) | TanStack `useChat` (`/agent-tanstack`) |
-|---|---|---|
-| Chat UI | Ready-made (`<CopilotChat>`) | You write it (like `/chat`) |
-| Goes through | A Next.js route (`app/api/copilotkit`) | Straight to FastAPI |
-| Chat after reload | Yes, until Next.js restarts | Yes (from Postgres) |
-| Reply continues after a refresh | No (the run is cut off) | Yes (`runs.py`) |
-| Tool calls on screen | `useDefaultRenderTool` | Message parts of type `tool-call` |
-| Size | ~1,100 npm packages | Already installed |
-
 ## Things to know before using this for real
 
 - **The Python server has no login.** It listens on `127.0.0.1` only, so only
   your machine can reach it. Anyone who can reach it could read any thread by
-  guessing its id. The CopilotKit route checks the login, but the TanStack page
-  calls Python directly. Before deploying, add auth to FastAPI (check the
+  guessing its id. The TanStack page calls Python directly from the
+  browser, with no Next.js route checking the login. Before deploying, add auth to FastAPI (check the
   session or a token) and decide threads there.
 - **Gemini free tier is slow and limited.** Replies can take 10 to 20 seconds
   to start, and you can hit 429/503 errors.
@@ -128,4 +110,3 @@ the page exactly as you left it, even before any reload.
 - LangGraph: install, quickstart (Graph API), add memory (Postgres checkpointer) at docs.langchain.com
 - Gemini in LangChain: `langchain-google-genai` (reads `GOOGLE_API_KEY`, then `GEMINI_API_KEY`)
 - `ag-ui-langgraph` on PyPI and its source in `.venv`
-- CopilotKit docs: Deep Agents with FastAPI (`HttpAgent`, `CopilotRuntime`, `CopilotChat`)

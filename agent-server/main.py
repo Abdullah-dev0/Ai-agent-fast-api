@@ -1,7 +1,7 @@
 """FastAPI server that exposes the LangGraph agent over AG-UI.
 
-POST   /agent                       run the agent; streams AG-UI events (CopilotKit
-                                    and TanStack's useChat both read them)
+POST   /agent                       run the agent; streams AG-UI events (TanStack's
+                                    useChat reads them)
 GET    /agent?threadId=...          the saved chat, plus the run still being
                                     written (for useChat's `persistence: true`)
 GET    /agent?runId=...&offset=...  rejoin a run after a refresh (runs.py)
@@ -135,7 +135,6 @@ def health():
 
 
 # The TanStack page calls this server straight from the browser (port 3000 -> 8123).
-# The CopilotKit page goes through Next.js, so it does not need this.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],

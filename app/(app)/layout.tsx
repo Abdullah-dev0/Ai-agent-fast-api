@@ -18,7 +18,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 						<Link href="/profile">Profile</Link>
 						<Link href="/settings">Settings</Link>
 						<Link href="/chat">Chat</Link>
-						<Link href="/agent">Agent</Link>
 						<Link href="/agent-tanstack">Agent (TanStack)</Link>
 					</nav>
 					<Suspense fallback={<UserMenuSkeleton />}>
