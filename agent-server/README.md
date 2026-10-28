@@ -24,7 +24,8 @@ Then, in the project root, `npm run dev`, sign in and open **Agent** or
 |---|---|
 | `tools.py` | Three plain Python functions the model can call: the current time, the weather (Open-Meteo, no key needed) and a safe calculator. |
 | `agent.py` | The agent, built with LangGraph like its quickstart: ask Gemini, run any tools it asked for, loop until it answers. |
-| `main.py` | FastAPI. Connects to Postgres, builds the agent, and exposes it at `POST /agent`. |
+| `main.py` | FastAPI. Connects to Postgres, builds the agent, and exposes it at `POST /agent`, plus `GET /agent?threadId=` for the saved chat. |
+| `history.py` | Turns a saved LangGraph thread into the `{ id, role, parts }` messages TanStack's `useChat` shows after a reload. |
 
 ## How one message travels
 
@@ -59,11 +60,22 @@ START -> call_model -> (asked for tools?) -> run_tools -> back to call_model
 |---|---|---|
 | The agent's memory of a conversation | Postgres, in LangGraph's own tables (`checkpoints`, `checkpoint_writes`, `checkpoint_blobs`, `checkpoint_migrations`), created by `checkpointer.setup()` | Everything: reloads and restarts |
 | The chat shown on the CopilotKit page | Next.js memory (`InMemoryAgentRunner`) | Page reloads, **not** a Next.js restart |
-| The chat shown on the TanStack page | Nowhere | Nothing: a reload shows an empty chat |
+| The chat shown on the TanStack page | Loaded from the agent's Postgres memory (`GET /agent?threadId=`, `persistence: true`) | Everything: reloads and restarts |
 
 So after a restart the screen can be empty while the agent still remembers
-(ask it "what did I ask you earlier?"). Each user gets their own thread:
-`copilot:<user id>` and `tanstack:<user id>`.
+(ask it "what did I ask you earlier?"). Each user has a main thread,
+`copilot:<user id>` (and `tanstack:<user id>`). **+ New chat** on `/agent`
+opens `/agent?thread=<uuid>`, which is the thread `copilot:<user id>:<uuid>`:
+a fresh conversation, and the URL keeps you in it after a reload.
+
+The TanStack page loads its chat from the agent on every page load (`history.py`).
+Tool results are saved with the id TanStack gives them (`tool-<call id>`, see
+`run_tools` in `agent.py`). When `useChat` sends the history back, the ids match
+and the adapter skips them instead of saving them twice.
+
+Separately, Next.js keeps a page you navigate away from alive in the background
+(`cacheComponents` uses React `<Activity>`), so going back through the menu shows
+the page exactly as you left it, even before any reload.
 
 ## CopilotKit or TanStack?
 
@@ -71,7 +83,7 @@ So after a restart the screen can be empty while the agent still remembers
 |---|---|---|
 | Chat UI | Ready-made (`<CopilotChat>`) | You write it (like `/chat`) |
 | Goes through | A Next.js route (`app/api/copilotkit`) | Straight to FastAPI |
-| Chat after reload | Yes, until Next.js restarts | No |
+| Chat after reload | Yes, until Next.js restarts | Yes (from Postgres) |
 | Tool calls on screen | `useDefaultRenderTool` | Message parts of type `tool-call` |
 | Size | ~1,100 npm packages | Already installed |
 

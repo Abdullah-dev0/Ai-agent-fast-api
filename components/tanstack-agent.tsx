@@ -1,21 +1,30 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
 
 const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL ?? "http://127.0.0.1:8123/agent";
 
 // The same useChat as /chat, but pointed straight at the Python agent server.
 // Both speak AG-UI, so sending and streaming work with no Next.js route.
-// No `persistence: true`: that loads history with GET ?threadId=, which the
-// Python server does not have. The agent still remembers the thread
-// (checkpointer), but this page shows an empty chat after a reload.
+// `persistence: true` = the server owns the history. On page load useChat calls
+// GET <AGENT_URL>?threadId=... and the Python server answers from LangGraph's
+// checkpointer (agent-server/history.py), so a reload shows the chat again.
 export function TanstackAgent({ threadId }: { threadId: string }) {
 	const [input, setInput] = useState("");
-	const { messages, sendMessage, isLoading, error } = useChat({
+	const bottomRef = useRef<HTMLDivElement>(null);
+
+	const { messages, sendMessage, isLoading, isHydrating, error } = useChat({
 		threadId,
+		persistence: true,
 		connection: fetchServerSentEvents(AGENT_URL),
 	});
+
+	// An assistant message is "empty" until its first text or tool call arrives.
+	const shown = (m: (typeof messages)[number]) =>
+		m.role === "user" || m.parts.some((p) => (p.type === "text" && p.content) || p.type === "tool-call");
+	const last = messages.at(-1);
+	const thinking = isLoading && !(last?.role === "assistant" && shown(last));
 
 	function submit(e: React.FormEvent) {
 		e.preventDefault();
@@ -25,10 +34,14 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 		setInput("");
 	}
 
+	useEffect(() => {
+		bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+	}, [messages.length, last, thinking]);
+
 	return (
 		<div className="flex flex-col gap-4">
 			<ul className="flex flex-col gap-3">
-				{messages.map((message) => (
+				{messages.filter(shown).map((message) => (
 					<li
 						key={message.id}
 						className={
@@ -38,17 +51,34 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 						}>
 						{message.parts.map((part, i) => {
 							if (part.type === "text") return <span key={i}>{part.content}</span>;
-							if (part.type === "tool-call")
+							if (part.type === "tool-call") {
+								// useChat fills `output` from the TOOL_CALL_RESULT event (live) and
+								// history.py fills it after a reload, so one field covers both.
+								const output = part.output;
 								return (
-									<span key={i} className="block text-xs text-zinc-500">
-										Used {part.name}
+									<span
+										key={i}
+										className="mb-1 block rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 dark:border-zinc-800">
+										<span className="font-medium">Used {part.name}</span>
+										<span className="block font-mono">input: {part.arguments}</span>
+										{output !== undefined && <span className="block font-mono">output: {String(output)}</span>}
 									</span>
 								);
+							}
 							return null;
 						})}
 					</li>
 				))}
-				{messages.length === 0 && <li className="text-sm text-zinc-500">No messages yet.</li>}
+				{thinking && (
+					<li className="self-start animate-pulse rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-500 dark:border-zinc-800">
+						Thinking…
+					</li>
+				)}
+				{isHydrating ? (
+					<li className="animate-pulse text-sm text-zinc-500">Loading chat…</li>
+				) : (
+					messages.length === 0 && !thinking && <li className="text-sm text-zinc-500">No messages yet.</li>
+				)}
 			</ul>
 
 			{error && <p className="text-sm text-red-600">{error.message}</p>}
@@ -62,11 +92,12 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 				/>
 				<button
 					type="submit"
-					disabled={!input.trim() || isLoading}
+					disabled={!input.trim() || isLoading || isHydrating}
 					className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900">
 					{isLoading ? "…" : "Send"}
 				</button>
 			</form>
+			<div ref={bottomRef} />
 		</div>
 	);
 }
