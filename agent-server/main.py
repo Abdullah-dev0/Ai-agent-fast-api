@@ -3,6 +3,7 @@
 POST /agent        streams the agent's reply as AG-UI events (what CopilotKit
                    and TanStack's useChat both understand)
 GET  /agent?threadId=...  the saved chat, for useChat's `persistence: true`
+DELETE /agent?threadId=... clear that chat from the agent's memory
 GET  /agent/health simple health check
 
 Run it with:  uv run main.py
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI):
         await checkpointer.setup()  # creates LangGraph's tables once; safe to repeat
         graph = build_graph(checkpointer)
         app.state.graph = graph  # the history route below reads threads from it
+        app.state.checkpointer = checkpointer  # the clear route deletes threads with it
         agent = LangGraphAgent(
             name="assistant",
             description="Gemini agent with tools",
@@ -63,6 +65,16 @@ async def chat_history(threadId: str, request: Request):
     messages = state.values.get("messages", []) if state else []
     # activeRun stays null: this server cannot rejoin a reply that is still streaming.
     return {"messages": to_ui_messages(messages), "activeRun": None, "interrupts": None}
+
+
+@app.delete("/agent")
+async def clear_chat(threadId: str, request: Request):
+    """Delete a thread from the agent's memory, so the next message starts fresh.
+
+    Same caveat as above: no login check, so keep this server private.
+    """
+    await request.app.state.checkpointer.adelete_thread(threadId)
+    return {"deleted": threadId}
 
 # The TanStack page calls this server straight from the browser (port 3000 -> 8123).
 # The CopilotKit page goes through Next.js, so it does not need this.

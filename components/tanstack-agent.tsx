@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
 
 const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL ?? "http://127.0.0.1:8123/agent";
@@ -14,7 +14,8 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 	const [input, setInput] = useState("");
 	const bottomRef = useRef<HTMLDivElement>(null);
 
-	const { messages, sendMessage, isLoading, isHydrating, error } = useChat({
+	const [clearing, startClear] = useTransition();
+	const { messages, sendMessage, isLoading, isHydrating, error, clear } = useChat({
 		threadId,
 		persistence: true,
 		connection: fetchServerSentEvents(AGENT_URL),
@@ -34,12 +35,32 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 		setInput("");
 	}
 
+	function clearChat() {
+		if (!confirm("Clear this chat? This cannot be undone.")) return;
+		startClear(async () => {
+			// Delete the thread from the agent's memory (DELETE /agent in main.py),
+			// otherwise the next reload would load it right back.
+			await fetch(`${AGENT_URL}?threadId=${encodeURIComponent(threadId)}`, { method: "DELETE" });
+			clear(); // and empty the screen
+		});
+	}
+
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
 	}, [messages.length, last, thinking]);
 
 	return (
 		<div className="flex flex-col gap-4">
+			<div className="flex justify-end">
+				<button
+					type="button"
+					onClick={clearChat}
+					// A streaming reply would save itself back after the clear.
+					disabled={clearing || isLoading || isHydrating || messages.length === 0}
+					className="rounded-md border border-red-300 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:hover:bg-red-950">
+					{clearing ? "Clearing…" : "Clear chat"}
+				</button>
+			</div>
 			<ul className="flex flex-col gap-3">
 				{messages.filter(shown).map((message) => (
 					<li
