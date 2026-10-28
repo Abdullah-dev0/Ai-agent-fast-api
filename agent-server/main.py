@@ -1,10 +1,12 @@
 """FastAPI server that exposes the LangGraph agent over AG-UI.
 
-POST /agent        streams the agent's reply as AG-UI events (what CopilotKit
-                   and TanStack's useChat both understand)
-GET  /agent?threadId=...  the saved chat, for useChat's `persistence: true`
-DELETE /agent?threadId=... clear that chat from the agent's memory
-GET  /agent/health simple health check
+POST   /agent                       run the agent; streams AG-UI events (CopilotKit
+                                    and TanStack's useChat both read them)
+GET    /agent?threadId=...          the saved chat, plus the run still being
+                                    written (for useChat's `persistence: true`)
+GET    /agent?runId=...&offset=...  rejoin a run after a refresh (runs.py)
+DELETE /agent?threadId=...          clear that chat from the agent's memory
+GET    /agent/health                simple health check
 
 Run it with:  uv run main.py
 """
@@ -16,13 +18,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from ag_ui_langgraph import LangGraphAgent, add_langgraph_fastapi_endpoint
+from ag_ui.core import RunAgentInput
+from ag_ui_langgraph import LangGraphAgent
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from history import to_ui_messages
+from runs import active, parse_offset, runs, start_run
 
 # Reuse the Next.js app's .env: GEMINI_API_KEY and DATABASE_URL live there.
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -37,9 +42,9 @@ async def lifespan(app: FastAPI):
     async with AsyncPostgresSaver.from_conn_string(os.environ["DATABASE_URL"]) as checkpointer:
         await checkpointer.setup()  # creates LangGraph's tables once; safe to repeat
         graph = build_graph(checkpointer)
-        app.state.graph = graph  # the history route below reads threads from it
+        app.state.graph = graph  # the history route reads threads from it
         app.state.checkpointer = checkpointer  # the clear route deletes threads with it
-        agent = LangGraphAgent(
+        app.state.agent = LangGraphAgent(
             name="assistant",
             description="Gemini agent with tools",
             graph=graph,
@@ -47,24 +52,56 @@ async def lifespan(app: FastAPI):
             # are most of the bytes on the wire; the chat UIs do not need them.
             emit_raw_events=False,
         )
-        add_langgraph_fastapi_endpoint(app, agent, "/agent")
         yield
 
 
 app = FastAPI(lifespan=lifespan)
 
 
-@app.get("/agent")
-async def chat_history(threadId: str, request: Request):
-    """The saved chat for a thread, in the shape useChat's `persistence: true` loads.
+def sse(events) -> StreamingResponse:
+    return StreamingResponse(events, media_type="text/event-stream")
 
-    No login check: like POST /agent, anyone who can reach this server and knows
-    a thread id can read it. Fine on 127.0.0.1, not on a public server.
-    """
+
+# Our own POST instead of ag-ui-langgraph's add_langgraph_fastapi_endpoint: that
+# one runs the agent inside the response, so a refresh would stop the reply.
+@app.post("/agent")
+async def run_agent(input: RunAgentInput, request: Request):
+    log = runs.get(input.run_id)
+    last_seen = request.headers.get("last-event-id")
+    if log and last_seen is not None:
+        # The connection dropped and useChat retried the same POST: do not run the
+        # agent again, just continue the log after the last event it received.
+        return sse(log.read(parse_offset(last_seen)))
+    if log is None:
+        log = start_run(request.app.state.agent, input)
+    return sse(log.read(0))
+
+
+@app.get("/agent")
+async def chat_history_or_rejoin(
+    request: Request, threadId: str | None = None, runId: str | None = None, offset: str | None = None
+):
+    """No login check: anyone who can reach this server and knows a thread or run
+    id can read it. Fine on 127.0.0.1, not on a public server."""
+    if runId is not None:
+        # A reloaded page rejoining a reply: replay it (offset -1 = from the
+        # start) and keep streaming until it ends.
+        log = runs.get(runId)
+        if log is None:
+            raise HTTPException(404, "Unknown or expired run")
+        return sse(log.read(parse_offset(request.headers.get("last-event-id") or offset)))
+
+    if threadId is None:
+        raise HTTPException(400, "threadId or runId is required")
     state = await request.app.state.graph.aget_state({"configurable": {"thread_id": threadId}})
     messages = state.values.get("messages", []) if state else []
-    # activeRun stays null: this server cannot rejoin a reply that is still streaming.
-    return {"messages": to_ui_messages(messages), "activeRun": None, "interrupts": None}
+    run_id = active.get(threadId)
+    return {
+        "messages": to_ui_messages(messages),
+        # useChat sees this, then rejoins with GET ?runId=...&offset=-1.
+        "activeRun": {"runId": run_id} if run_id else None,
+        "interrupts": None,
+    }
 
 
 @app.delete("/agent")
@@ -75,6 +112,12 @@ async def clear_chat(threadId: str, request: Request):
     """
     await request.app.state.checkpointer.adelete_thread(threadId)
     return {"deleted": threadId}
+
+
+@app.get("/agent/health")
+def health():
+    return {"status": "ok", "agent": {"name": "assistant"}}
+
 
 # The TanStack page calls this server straight from the browser (port 3000 -> 8123).
 # The CopilotKit page goes through Next.js, so it does not need this.

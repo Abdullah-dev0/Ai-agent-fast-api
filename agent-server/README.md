@@ -18,7 +18,7 @@ uv run main.py       # agent on http://127.0.0.1:8123
 Then, in the project root, `npm run dev`, sign in and open **Agent** or
 **Agent (TanStack)** in the top menu.
 
-## The three files
+## The files
 
 | File | What it does |
 |---|---|
@@ -26,6 +26,25 @@ Then, in the project root, `npm run dev`, sign in and open **Agent** or
 | `agent.py` | The agent, built with LangGraph like its quickstart: ask Gemini, run any tools it asked for, loop until it answers. |
 | `main.py` | FastAPI. Connects to Postgres, builds the agent, and exposes it at `POST /agent`, plus `GET /agent?threadId=` for the saved chat. |
 | `history.py` | Turns a saved LangGraph thread into the `{ id, role, parts }` messages TanStack's `useChat` shows after a reload. |
+| `runs.py` | Replies that survive a refresh: runs the agent in the background and keeps a numbered log of its events, so a reloaded page can rejoin. |
+
+## Refreshing in the middle of a reply (`runs.py`)
+
+Written by hand to follow the protocol TanStack's `useChat` speaks:
+
+| Moment | What the browser sends | What `main.py` does |
+|---|---|---|
+| Send | `POST /agent` | Starts the agent in a background task and streams its log, each event tagged `id: 1`, `id: 2`, ... |
+| Connection drops | The same POST again, with `Last-Event-ID: <last id>` | Does **not** run the agent again; continues the log after that id |
+| Page reload | `GET /agent?threadId=` | Returns the history **and** `activeRun: { runId }` while a reply is running |
+| Rejoin | `GET /agent?runId=...&offset=-1` | Replays the log from the start, then streams the rest live |
+
+The agent no longer runs inside the HTTP response, so closing the tab does not
+stop it; the reply finishes and is saved either way. Logs live in this
+process's memory and are dropped 60 seconds after a run ends, so a server
+restart in the middle of a reply loses that reply (the finished ones are in
+Postgres). `ag-ui-langgraph`'s own `add_langgraph_fastapi_endpoint` is no longer
+used, because it runs the agent inside the response.
 
 ## How one message travels
 
@@ -84,6 +103,7 @@ the page exactly as you left it, even before any reload.
 | Chat UI | Ready-made (`<CopilotChat>`) | You write it (like `/chat`) |
 | Goes through | A Next.js route (`app/api/copilotkit`) | Straight to FastAPI |
 | Chat after reload | Yes, until Next.js restarts | Yes (from Postgres) |
+| Reply continues after a refresh | No (the run is cut off) | Yes (`runs.py`) |
 | Tool calls on screen | `useDefaultRenderTool` | Message parts of type `tool-call` |
 | Size | ~1,100 npm packages | Already installed |
 
@@ -100,7 +120,8 @@ the page exactly as you left it, even before any reload.
   Postgres driver (psycopg) cannot run on Windows' default event loop.
 - `ag-ui-langgraph`'s README passes the graph straight to
   `add_langgraph_fastapi_endpoint`; the code needs it wrapped in
-  `LangGraphAgent(name=..., graph=...)`, as `main.py` does.
+  `LangGraphAgent(name=..., graph=...)`. `main.py` no longer uses that helper
+  (see `runs.py`), but still runs the agent through `LangGraphAgent`.
 
 ## Sources
 
