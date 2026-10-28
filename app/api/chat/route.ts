@@ -47,23 +47,18 @@ export async function POST(request: Request) {
 }
 
 export async function GET(request: Request) {
-	// Rejoin: after a reload, useChat calls GET ?runId=...&offset=... to replay a
-	// reply that is still streaming. Check the run is in this user's thread first.
+	const user = await getUser();
+	if (!user) return new Response("Unauthorized", { status: 401 });
+	const threadId = threadIdFor(user.id);
+
+	// After a reload, useChat rejoins a reply that is still streaming.
 	const runId = new URL(request.url).searchParams.get("runId");
 	if (runId) {
-		const user = await getUser();
-		if (!user) return new Response("Unauthorized", { status: 401 });
 		const run = await chatPersistence.stores.runs?.get(runId);
-		if (run?.threadId !== threadIdFor(user.id)) return new Response("Not found", { status: 404 });
+		if (run?.threadId !== threadId) return new Response("Not found", { status: 404 });
 		return resumeServerSentEventsResponse({ adapter: memoryStream(request) });
 	}
 
-	// Hydrate on mount: useChat({ persistence: true }) calls GET ?threadId=...
-	return reconstructChat(chatPersistence, request, {
-		authorize: async (threadId) => {
-			const user = await getUser();
-			if (!user) return new Response("Unauthorized", { status: 401 });
-			return threadId === threadIdFor(user.id);
-		},
-	});
+	// On mount, useChat loads the chat.
+	return reconstructChat(chatPersistence, request, { authorize: (id) => id === threadId });
 }
