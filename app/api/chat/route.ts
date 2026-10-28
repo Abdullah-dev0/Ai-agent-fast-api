@@ -35,6 +35,9 @@ export async function POST(request: Request) {
 		messages: params.messages,
 		threadId: params.threadId,
 		runId: params.runId,
+		// Also stream a summary of the model's thinking (a `thinking` message part).
+		// "low" keeps replies quick; thinking tokens are billed as output.
+		reasoning: "low",
 		retry: { maxRetries: 1 },
 		middleware: [withPersistence(chatPersistence)],
 	});

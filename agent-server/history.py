@@ -18,6 +18,13 @@ def text_of(content) -> str:
     return "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
 
 
+def thinking_of(content) -> str:
+    """The thought summary Gemini sent with a reply (include_thoughts in agent.py)."""
+    if isinstance(content, str):
+        return ""
+    return "".join(p.get("thinking", "") for p in content if isinstance(p, dict) and p.get("type") == "thinking")
+
+
 def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
     # A tool's result is its own message in LangGraph; in the UI it belongs on
     # the tool call that asked for it.
@@ -29,7 +36,9 @@ def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
         if isinstance(m, HumanMessage):
             ui.append({"id": m.id, "role": "user", "parts": [{"type": "text", "content": text_of(m.content)}]})
         elif isinstance(m, AIMessage):
-            parts = [
+            # Thinking first, as it streamed: the model thinks, then calls tools or answers.
+            parts = [{"type": "thinking", "content": t}] if (t := thinking_of(m.content)) else []
+            parts += [
                 {
                     "type": "tool-call",
                     "id": call["id"],

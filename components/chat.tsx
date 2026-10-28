@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
 import { deleteChat } from "@/lib/actions";
+import { Thinking } from "./thinking";
 
 export function Chat({ threadId }: { threadId: string }) {
 	const [input, setInput] = useState("");
@@ -16,10 +17,12 @@ export function Chat({ threadId }: { threadId: string }) {
 	});
 
 	const hasText = (m: (typeof messages)[number]) => m.parts.some((p) => p.type === "text" && p.content);
+	// Something to show: its answer, or its thinking while the answer is on the way.
+	const shown = (m: (typeof messages)[number]) =>
+		m.role === "user" || m.parts.some((p) => (p.type === "text" || p.type === "thinking") && p.content);
 	const last = messages.at(-1);
-	// A reply is pending until the assistant's first visible text arrives. Reasoning
-	// models can stream thinking first, so "status === submitted" alone is too short.
-	const thinking = isLoading && !(last?.role === "assistant" && hasText(last));
+	// A reply is pending until the assistant's first thinking or text arrives.
+	const thinking = isLoading && !(last?.role === "assistant" && shown(last));
 
 	function submit(e: React.FormEvent) {
 		e.preventDefault();
@@ -52,7 +55,7 @@ export function Chat({ threadId }: { threadId: string }) {
 			</div>
 
 			<ul className="flex flex-col gap-3" aria-busy={isHydrating || thinking}>
-				{messages.filter((m) => m.role === "user" || hasText(m)).map((message) => (
+				{messages.filter(shown).map((message) => (
 					<li
 						key={message.id}
 						className={
@@ -61,7 +64,13 @@ export function Chat({ threadId }: { threadId: string }) {
 								: "self-start rounded-lg border border-zinc-200 px-3 py-2 text-sm whitespace-pre-wrap dark:border-zinc-800"
 						}
 					>
-						{message.parts.map((part, i) => (part.type === "text" ? <span key={i}>{part.content}</span> : null))}
+						{message.parts.map((part, i) => {
+							if (part.type === "text") return <span key={i}>{part.content}</span>;
+							if (part.type === "thinking" && part.content)
+								// Done once the answer has started, or the reply has ended without one.
+								return <Thinking key={i} content={part.content} done={hasText(message) || !isLoading} />;
+							return null;
+						})}
 					</li>
 				))}
 				{thinking && (

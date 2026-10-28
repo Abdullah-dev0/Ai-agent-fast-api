@@ -23,7 +23,11 @@ from tools import TOOLS
 # instruction ("one word per line") long after the user moved on.
 # timeout: give up on one Gemini call after 60 s instead of waiting forever.
 # max_retries: retry a failed call (429/503 are common on the free tier) at most twice.
-model = init_chat_model("google_genai:gemini-3.5-flash", timeout=60, max_retries=2).bind_tools(TOOLS)
+# include_thoughts: also send a summary of the model's thinking. ag-ui-langgraph
+# streams it as AG-UI REASONING events, which useChat shows as `thinking` parts.
+model = init_chat_model(
+    "google_genai:gemini-3.5-flash", timeout=60, max_retries=2, include_thoughts=True
+).bind_tools(TOOLS)
 tools_by_name = {t.name: t for t in TOOLS}
 
 SYSTEM_PROMPT = (

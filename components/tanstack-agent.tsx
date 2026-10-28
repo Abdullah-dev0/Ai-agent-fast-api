@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
+import { Thinking } from "./thinking";
 
 const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL ?? "http://127.0.0.1:8123/agent";
 
@@ -21,9 +22,10 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 		connection: fetchServerSentEvents(AGENT_URL),
 	});
 
-	// An assistant message is "empty" until its first text or tool call arrives.
+	// An assistant message is "empty" until its first thinking, text or tool call arrives.
 	const shown = (m: (typeof messages)[number]) =>
-		m.role === "user" || m.parts.some((p) => (p.type === "text" && p.content) || p.type === "tool-call");
+		m.role === "user" ||
+		m.parts.some((p) => ((p.type === "text" || p.type === "thinking") && p.content) || p.type === "tool-call");
 	const last = messages.at(-1);
 	const thinking = isLoading && !(last?.role === "assistant" && shown(last));
 
@@ -79,6 +81,12 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 						}>
 						{message.parts.map((part, i) => {
 							if (part.type === "text") return <span key={i}>{part.content}</span>;
+							if (part.type === "thinking" && part.content) {
+								// One reply can think more than once (before and after a tool), so each
+								// block is done once anything follows it, or the reply has ended.
+								const done = !isLoading || message.parts.slice(i + 1).some((p) => p.type !== "thinking");
+								return <Thinking key={i} content={part.content} done={done} />;
+							}
 							if (part.type === "tool-call") {
 								// useChat fills `output` from the TOOL_CALL_RESULT event (live) and
 								// history.py fills it after a reload, so one field covers both.
