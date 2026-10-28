@@ -3,6 +3,7 @@
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { auth } from "./auth";
+import { deleteThread, threadIdFor } from "./chat-persistence";
 import { requireUser } from "./dal";
 
 export type ActionState = { ok: boolean; message: string } | null;
@@ -23,4 +24,10 @@ export async function updateName(
   // old user. This re-runs the (app) layout and pushes the fresh user down.
   revalidatePath("/", "layout");
   return { ok: true, message: "Saved." };
+}
+
+/** Delete the signed-in user's chat. The thread id comes from the session, never the client. */
+export async function deleteChat(): Promise<void> {
+  const user = await requireUser();
+  await deleteThread(threadIdFor(user.id));
 }

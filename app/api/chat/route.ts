@@ -11,7 +11,7 @@ import { getUser } from "@/lib/dal";
 import { chatPersistence, threadIdFor } from "@/lib/chat-persistence";
 
 // Google's Gemini API directly. geminiText reads GEMINI_API_KEY (or GOOGLE_API_KEY).
-const MODEL = "gemini-3.5-flash";
+const MODEL = "gemini-3.5-flash-lite";
 
 // Send a message. withPersistence loads the stored thread, merges, and saves it.
 export async function POST(request: Request) {
@@ -35,6 +35,7 @@ export async function POST(request: Request) {
 		messages: params.messages,
 		threadId: params.threadId,
 		runId: params.runId,
+		retry: { maxRetries: 1 },
 		middleware: [withPersistence(chatPersistence)],
 	});
 	// The durability log records every chunk before it is sent. With it, a closed

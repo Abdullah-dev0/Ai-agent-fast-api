@@ -61,6 +61,12 @@ export const chatPersistence: ChatTranscriptPersistence = defineAIPersistence({
   },
 });
 
+/** Delete a thread's messages and run records. Callers must check ownership first. */
+export async function deleteThread(threadId: string): Promise<void> {
+  await pool.query("DELETE FROM chat_runs WHERE thread_id = $1", [threadId]);
+  await pool.query("DELETE FROM chat_threads WHERE thread_id = $1", [threadId]);
+}
+
 /** One thread per user, derived on the server so a client cannot pick someone else's. */
 export function threadIdFor(userId: string): string {
   return `user:${userId}`;

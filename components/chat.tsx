@@ -1,13 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
+import { deleteChat } from "@/lib/actions";
 
 export function Chat({ threadId }: { threadId: string }) {
 	const [input, setInput] = useState("");
 	// persistence: true = the server is the source of truth. Nothing is kept in
 	// the browser; on mount the hook GETs /api/chat?threadId=... and repaints.
-	const { messages, sendMessage, isLoading, isHydrating, error, stop } = useChat({
+	const [deleting, startDelete] = useTransition();
+	const { messages, sendMessage, isLoading, isHydrating, error, stop, clear } = useChat({
 		threadId,
 		connection: fetchServerSentEvents("/api/chat"),
 		persistence: true,
@@ -27,8 +29,28 @@ export function Chat({ threadId }: { threadId: string }) {
 		setInput("");
 	}
 
+	function deleteAll() {
+		if (!confirm("Delete this whole chat? This cannot be undone.")) return;
+		startDelete(async () => {
+			await deleteChat();
+			clear();
+		});
+	}
+
 	return (
 		<div className="flex flex-col gap-4">
+			<div className="flex justify-end">
+				<button
+					type="button"
+					onClick={deleteAll}
+					// A streaming reply would save itself back after the delete.
+					disabled={deleting || isLoading || isHydrating || messages.length === 0}
+					className="rounded-md border border-red-300 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:hover:bg-red-950"
+				>
+					{deleting ? "Deleting…" : "Delete chat"}
+				</button>
+			</div>
+
 			<ul className="flex flex-col gap-3" aria-busy={isHydrating || thinking}>
 				{messages.filter((m) => m.role === "user" || hasText(m)).map((message) => (
 					<li
