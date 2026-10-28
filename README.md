@@ -1,16 +1,30 @@
 # User cache demo
 
-Next.js 16 (App Router) + Better Auth + SQLite. A test bed for one question:
+Next.js 16 (App Router) + Better Auth + Postgres. A test bed for one question:
 how do you fetch the current user once and use it everywhere?
 
 ## Run it
 
 ```bash
 npm install
-cp .env.example .env        # then set BETTER_AUTH_SECRET (openssl rand -base64 32)
-npm run migrate             # creates sqlite.db with Better Auth's tables
+cp .env.example .env        # set BETTER_AUTH_SECRET (openssl rand -base64 32) and GEMINI_API_KEY
+docker compose up -d --wait # Postgres on 127.0.0.1:5434
+npm run migrate             # Better Auth tables + db/migrations/*.sql
 npm run dev                 # http://localhost:3000
 ```
+
+## Chat that survives a reload
+
+`/chat` uses TanStack AI with Google Gemini (`gemini-3.5-flash`). On every turn,
+`withPersistence` saves the whole transcript to the `chat_threads` table, and on
+mount `useChat({ persistence: true })` reloads it with `GET /api/chat?threadId=`.
+
+| File | What it does |
+|---|---|
+| `lib/chat-persistence.ts` | Message store against Postgres (load = `[]` if missing, save = full overwrite) |
+| `app/api/chat/route.ts` | `POST` streams the reply, `GET` hydrates; both check the thread belongs to the user |
+| `components/chat.tsx` | `useChat` with server-side persistence, nothing kept in the browser |
+| `db/migrations/` | Versioned SQL, applied by `npm run migrate`, never at request time |
 
 ## Where to look
 
