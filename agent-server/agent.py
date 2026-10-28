@@ -21,7 +21,9 @@ from tools import TOOLS
 # so this uses the same key as the Next.js app.
 # The full Flash model, not -lite: the lite one tended to keep obeying an old
 # instruction ("one word per line") long after the user moved on.
-model = init_chat_model("google_genai:gemini-3.5-flash").bind_tools(TOOLS)
+# timeout: give up on one Gemini call after 60 s instead of waiting forever.
+# max_retries: retry a failed call (429/503 are common on the free tier) at most twice.
+model = init_chat_model("google_genai:gemini-3.5-flash", timeout=60, max_retries=2).bind_tools(TOOLS)
 tools_by_name = {t.name: t for t in TOOLS}
 
 SYSTEM_PROMPT = (

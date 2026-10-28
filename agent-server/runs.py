@@ -14,6 +14,7 @@ Logs live in this process's memory: a server restart mid-reply loses them.
 """
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
 
 from ag_ui.core import EventType, RunAgentInput, RunErrorEvent
@@ -23,6 +24,9 @@ from ag_ui_langgraph import LangGraphAgent
 # How long a finished run's log is kept, so a page that reloads just as the
 # reply ends can still replay it.
 KEEP_FINISHED_SECONDS = 60
+# The most one run may take, all model and tool calls included. Past this it is
+# stopped, so a stuck reply cannot stay "running" (and costing) forever.
+RUN_TIMEOUT_SECONDS = float(os.environ.get("AGENT_RUN_TIMEOUT_SECONDS", "120"))
 
 
 class RunLog:
@@ -60,7 +64,7 @@ class RunLog:
 
 runs: dict[str, RunLog] = {}  # run id -> its log
 active: dict[str, str] = {}  # thread id -> the run id still being written
-_tasks: set[asyncio.Task] = set()  # keeps background tasks from being garbage-collected
+tasks: dict[str, asyncio.Task] = {}  # run id -> its background task (also keeps it alive)
 
 
 def start_run(agent: LangGraphAgent, input: RunAgentInput) -> RunLog:
@@ -70,23 +74,44 @@ def start_run(agent: LangGraphAgent, input: RunAgentInput) -> RunLog:
     active[input.thread_id] = input.run_id
     encoder = EventEncoder(accept="text/event-stream")
 
+    async def fail(message: str, code: str) -> None:
+        # The page reads RUN_ERROR as "this run is over", so it stops waiting.
+        await log.append(encoder.encode(RunErrorEvent(type=EventType.RUN_ERROR, message=message, code=code)))
+
     async def drive() -> None:
         try:
-            # A fresh copy per run: the agent keeps per-run state on itself.
-            async for event in agent.clone().run(input):
-                await log.append(encoder.encode(event))
+            async with asyncio.timeout(RUN_TIMEOUT_SECONDS):
+                # A fresh copy per run: the agent keeps per-run state on itself.
+                async for event in agent.clone().run(input):
+                    await log.append(encoder.encode(event))
+        except TimeoutError:
+            await fail(f"The reply took longer than {RUN_TIMEOUT_SECONDS:.0f} s and was stopped.", "timeout")
+        except asyncio.CancelledError:
+            # cancel_run() below. We started this task ourselves, so we end it
+            # cleanly here instead of re-raising.
+            await fail("Stopped.", "cancelled")
         except Exception as error:  # surface the failure to the page instead of hanging
-            await log.append(encoder.encode(RunErrorEvent(type=EventType.RUN_ERROR, message=str(error))))
+            await fail(str(error), "error")
         finally:
             await log.finish()
             if active.get(input.thread_id) == input.run_id:
                 del active[input.thread_id]
+            tasks.pop(input.run_id, None)
             asyncio.get_running_loop().call_later(KEEP_FINISHED_SECONDS, runs.pop, input.run_id, None)
 
-    task = asyncio.create_task(drive())
-    _tasks.add(task)
-    task.add_done_callback(_tasks.discard)
+    tasks[input.run_id] = asyncio.create_task(drive())
     return log
+
+
+def cancel_run(thread_id: str) -> bool:
+    """Stop the thread's running reply. Cancelling the task also cancels the
+    Gemini call or tool it is waiting on. Returns False if nothing was running."""
+    run_id = active.get(thread_id)
+    task = tasks.get(run_id) if run_id else None
+    if task is None:
+        return False
+    task.cancel()
+    return True
 
 
 def parse_offset(value: str | None) -> int:

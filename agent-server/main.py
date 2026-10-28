@@ -5,6 +5,7 @@ POST   /agent                       run the agent; streams AG-UI events (Copilot
 GET    /agent?threadId=...          the saved chat, plus the run still being
                                     written (for useChat's `persistence: true`)
 GET    /agent?runId=...&offset=...  rejoin a run after a refresh (runs.py)
+POST   /agent/stop?threadId=...     stop the reply being written for that thread
 DELETE /agent?threadId=...          clear that chat from the agent's memory
 GET    /agent/health                simple health check
 
@@ -27,7 +28,7 @@ from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from history import to_ui_messages
-from runs import active, parse_offset, runs, start_run
+from runs import active, cancel_run, parse_offset, runs, start_run
 
 # Reuse the Next.js app's .env: GEMINI_API_KEY and DATABASE_URL live there.
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -51,6 +52,9 @@ async def lifespan(app: FastAPI):
             # RAW events copy LangGraph's internal events for debugging only and
             # are most of the bytes on the wire; the chat UIs do not need them.
             emit_raw_events=False,
+            # At most 12 graph steps per run (one tool round trip is 2), so a model
+            # that keeps calling tools cannot loop forever. LangGraph's default is 25.
+            config={"recursion_limit": 12},
         )
         yield
 
@@ -102,6 +106,17 @@ async def chat_history_or_rejoin(
         "activeRun": {"runId": run_id} if run_id else None,
         "interrupts": None,
     }
+
+
+@app.post("/agent/stop")
+async def stop_run(threadId: str):
+    """Stop the reply that is being written for this thread.
+
+    Needed because replies run in the background: closing the connection (which
+    is all useChat's stop() does) no longer stops them. Same caveat as above:
+    no login check, so keep this server private.
+    """
+    return {"stopped": cancel_run(threadId)}
 
 
 @app.delete("/agent")

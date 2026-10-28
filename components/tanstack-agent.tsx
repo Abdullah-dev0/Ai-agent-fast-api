@@ -15,7 +15,7 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 	const bottomRef = useRef<HTMLDivElement>(null);
 
 	const [clearing, startClear] = useTransition();
-	const { messages, sendMessage, isLoading, isHydrating, error, clear } = useChat({
+	const { messages, sendMessage, isLoading, isHydrating, error, clear, stop } = useChat({
 		threadId,
 		persistence: true,
 		connection: fetchServerSentEvents(AGENT_URL),
@@ -33,6 +33,13 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 		if (!text || isLoading) return;
 		sendMessage(text);
 		setInput("");
+	}
+
+	function stopReply() {
+		// useChat's stop() only closes this browser's connection; the reply keeps
+		// running on the server (runs.py). This asks the server to stop it too.
+		stop();
+		void fetch(`${AGENT_URL}/stop?threadId=${encodeURIComponent(threadId)}`, { method: "POST" });
 	}
 
 	function clearChat() {
@@ -111,12 +118,21 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 					placeholder="Ask about the time, the weather, or some math"
 					className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
 				/>
-				<button
-					type="submit"
-					disabled={!input.trim() || isLoading || isHydrating}
-					className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900">
-					{isLoading ? "…" : "Send"}
-				</button>
+				{isLoading ? (
+					<button
+						type="button"
+						onClick={stopReply}
+						className="rounded-md border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700">
+						Stop
+					</button>
+				) : (
+					<button
+						type="submit"
+						disabled={!input.trim() || isHydrating}
+						className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900">
+						Send
+					</button>
+				)}
 			</form>
 			<div ref={bottomRef} />
 		</div>
