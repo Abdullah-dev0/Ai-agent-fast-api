@@ -46,3 +46,9 @@ mount `useChat({ persistence: true })` reloads it with `GET /api/chat?threadId=`
 3. Change your name on `/profile` and watch the header update without a reload.
 4. Sign out and open `/profile` directly: `proxy.ts` redirects you.
 5. Run `npm run build` and compare the route symbols for `/` and `/dashboard`.
+
+## Python agent (agent-server/)
+
+A LangGraph agent with Gemini and tools, served by FastAPI, used by the `/agent`
+(CopilotKit) and `/agent-tanstack` (TanStack useChat) pages. See
+[agent-server/README.md](agent-server/README.md) for how it works and how to run it.

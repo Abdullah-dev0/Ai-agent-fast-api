@@ -11,6 +11,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ag-ui/client": "^1.0.2",
+    "@copilotkit/react-core": "^1.83.0",
+    "@copilotkit/runtime": "^1.83.0",
     "@tanstack/ai": "^1.0.0",
     "@tanstack/ai-gemini": "^1.0.0",
     "@tanstack/ai-persistence": "^1.0.0",
