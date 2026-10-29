@@ -1,6 +1,7 @@
 # Agent server (Python)
 
-A LangChain agent (Gemini + four tools) served by FastAPI over AG-UI. The
+**Aragon**, a LangChain agent (Gemini + six tools, web search included) served
+by FastAPI over AG-UI. The
 Next.js app's `/agent` page talks to it with our own React hook,
 `useAgentChat` (`lib/use-agent-chat.ts`).
 
@@ -22,8 +23,8 @@ Then, in the project root, `npm run dev`, sign in and open **Agent**.
 
 | File | What it does |
 |---|---|
-| `tools.py` | The tools: current time, weather (Open-Meteo), a safe calculator, and `delete_chat_history`, which needs the user's approval. |
-| `agent.py` | The agent: LangChain's `create_agent`, with `HumanInTheLoopMiddleware` for the approval. Also the AG-UI wrapper. |
+| `tools.py` | The tools: current time, weather (Open-Meteo), a safe calculator, `web_search` and `read_webpage` (Tavily), and `delete_chat_history`, which needs the user's approval. |
+| `agent.py` | The agent: LangChain's `create_agent`, its name and system prompt (with today's date), and `HumanInTheLoopMiddleware` for the approval. Also the AG-UI wrapper. |
 | `main.py` | The API: `ag-ui-langgraph`'s endpoint to run the agent, plus history and clear. |
 | `history.py` | Turns a saved thread into the messages the page shows after a reload, in the same shape `useAgentChat` builds from the live stream. |
 
@@ -88,6 +89,46 @@ A waiting approval is saved by the checkpointer, so after a reload
 
 A denied call streams no result (the middleware answers without running the
 tool), so the page labels it "Not run" until a reload shows the reason.
+
+## Web search (`web_search`, `read_webpage`)
+
+Two tools that work together, so the agent researches instead of answering
+from snippets:
+
+1. `web_search(query, topic, time_range, max_results)` returns titles, URLs and
+   short snippets.
+2. `read_webpage(urls)` reads up to 3 of those pages in full (as markdown, cut
+   at 8,000 characters each).
+3. The agent answers from what it read and cites the pages as markdown links.
+
+Both use [Tavily](https://docs.tavily.com), a search API made for agents. Its
+servers fetch the pages, never this one.
+
+- **Free, no key:** without `TAVILY_API_KEY`, `tavily-python` runs keyless;
+  search and extract still work, with lower rate limits.
+- **With a key** (`TAVILY_API_KEY` in `.env`, free plan 1,000 credits a month):
+  higher limits. A basic search costs 1 credit, reading 5 pages costs 1.
+- A failed search or read (rate limit, network) comes back to the model as
+  `{"error": ...}`, so the reply goes on instead of failing.
+
+The page shows these calls as "Searched “query” · 5 results" and "Read 2
+pages", with the sources as links (`webToolView` in `components/agent-chat.tsx`).
+
+The system prompt is built for every model call (`dynamic_prompt`) and includes
+today's date. Without it Gemini trusted its training: asked for the latest
+Python, it searched, then answered with a release two years old.
+
+Web pages are untrusted text: a page could contain instructions aimed at the
+agent. Here the worst case is a wrong answer (the only tool with side effects,
+`delete_chat_history`, needs the user's approval), but keep that in mind before
+giving the agent tools that act.
+
+## Its name
+
+The agent calls itself **Aragon** (`ASSISTANT_NAME` in `agent.py`). The system
+prompt tells it never to say it is Gemini or to name the model or company
+behind it. A prompt is not a guarantee: a determined user can sometimes get a
+model to break such rules.
 
 ## Reasoning
 

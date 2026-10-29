@@ -6,12 +6,16 @@ docstring). Write the docstring for the model, it is how it picks a tool.
 """
 
 import ast
+import json
 import operator
+import os
 from datetime import datetime
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from langchain.tools import tool
+from tavily import AsyncTavilyClient
 
 
 @tool
@@ -82,6 +86,74 @@ def calculate(expression: str) -> str:
         return f"Could not calculate {expression!r}: {error}"
 
 
+# Web search and page reading go through Tavily (https://docs.tavily.com), a
+# search API built for agents. Without TAVILY_API_KEY the client runs keyless:
+# search and extract still work, for free but rate limited. With a key (the free
+# plan has 1,000 credits a month) the limits are higher. Pages are fetched by
+# Tavily's servers, never by this one.
+_tavily: AsyncTavilyClient | None = None
+
+
+def _client() -> AsyncTavilyClient:
+    global _tavily
+    if _tavily is None:
+        _tavily = AsyncTavilyClient(api_key=os.environ.get("TAVILY_API_KEY") or None)
+    return _tavily
+
+
+# Keep tool results small enough that a few pages fit in the model's context.
+SNIPPET_CHARS = 500
+PAGE_CHARS = 8000
+
+
+@tool
+async def web_search(
+    query: str,
+    topic: Literal["general", "news"] = "general",
+    time_range: Literal["day", "week", "month", "year"] | None = None,
+    max_results: int = 5,
+) -> str:
+    """Search the web. Use it for anything recent, changing or that you need to
+    check. topic="news" for current events; time_range keeps results recent.
+    Returns JSON: {"query", "results": [{"title", "url", "snippet", "published"}]}.
+    Snippets are short: call read_webpage on the best results before answering."""
+    try:
+        response = await _client().search(
+            query, topic=topic, time_range=time_range, max_results=max(1, min(max_results, 10))
+        )
+    except Exception as error:  # rate limit, network: tell the model instead of failing the run
+        return json.dumps({"query": query, "error": str(error) or type(error).__name__})
+    results = [
+        {
+            "title": r.get("title") or "",
+            "url": r["url"],
+            "snippet": (r.get("content") or "")[:SNIPPET_CHARS],
+            **({"published": r["published_date"]} if r.get("published_date") else {}),
+        }
+        for r in response.get("results", [])
+    ]
+    return json.dumps({"query": query, "results": results}, ensure_ascii=False)
+
+
+@tool
+async def read_webpage(urls: list[str]) -> str:
+    """Read up to 3 web pages (usually the best results from web_search) and
+    return their main text as markdown, so you can answer from the source.
+    Returns JSON: {"pages": [{"url", "title", "content"}], "failed": [{"url", "error"}]}."""
+    try:
+        response = await _client().extract(urls[:3], format="markdown")
+    except Exception as error:
+        return json.dumps({"error": str(error) or type(error).__name__})
+    pages = []
+    for r in response.get("results", []):
+        content = r.get("raw_content") or ""
+        if len(content) > PAGE_CHARS:
+            content = content[:PAGE_CHARS] + "\n\n[Cut here: the page continues.]"
+        pages.append({"url": r["url"], "title": r.get("title") or "", "content": content})
+    failed = [{"url": f.get("url"), "error": f.get("error")} for f in response.get("failed_results", [])]
+    return json.dumps({"pages": pages, "failed": failed}, ensure_ascii=False)
+
+
 @tool
 def delete_chat_history() -> str:
     """Delete this whole conversation, every message, for good. Use it only when
@@ -91,4 +163,4 @@ def delete_chat_history() -> str:
     return "Approved: the whole chat history is deleted as soon as this reply ends."
 
 
-TOOLS = [get_current_time, get_weather, calculate, delete_chat_history]
+TOOLS = [get_current_time, get_weather, calculate, web_search, read_webpage, delete_chat_history]

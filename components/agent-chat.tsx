@@ -161,6 +161,23 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	);
 }
 
+// Markdown with GitHub extras (tables, strikethrough); links open in a new tab.
+function MarkdownText({ text }: { text: string }) {
+	return (
+		<Markdown
+			remarkPlugins={[remarkGfm]}
+			components={{
+				a: ({ href, children }) => (
+					<a href={href} target="_blank" rel="noreferrer">
+						{children}
+					</a>
+				),
+			}}>
+			{text}
+		</Markdown>
+	);
+}
+
 function Composer({
 	value,
 	onChange,
@@ -248,7 +265,7 @@ function AssistantMessage({
 				if (part.type === "text")
 					return (
 						<div key={part.id} className={MARKDOWN}>
-							<Markdown remarkPlugins={[remarkGfm]}>{part.text}</Markdown>
+							<MarkdownText text={part.text} />
 						</div>
 					);
 				if (part.type === "reasoning")
@@ -270,7 +287,7 @@ function Reasoning({ part, active }: { part: Extract<Part, { type: "reasoning" }
 			</summary>
 			<div
 				className={`mt-2 border-l-2 border-zinc-200 pl-4 text-sm text-zinc-500 dark:border-zinc-700 ${MARKDOWN}`}>
-				<Markdown remarkPlugins={[remarkGfm]}>{part.text}</Markdown>
+				<MarkdownText text={part.text} />
 			</div>
 		</details>
 	);
@@ -285,6 +302,33 @@ function ToolCall({
 	waiting: boolean;
 	running: boolean;
 }) {
+	// The web tools get their own summary and a list of sources.
+	const web = webToolView(part);
+	if (web) {
+		const pending = part.result === undefined;
+		return (
+			<details className="group">
+				<summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 [&::-webkit-details-marker]:hidden">
+					<GlobeIcon />
+					<span className={pending && running ? "animate-pulse" : undefined}>{web.label}</span>
+					<ChevronIcon />
+				</summary>
+				{web.sources.length > 0 && (
+					<ul className="mt-2 flex flex-col gap-1 border-l-2 border-zinc-200 pl-4 text-sm dark:border-zinc-700">
+						{web.sources.map((s) => (
+							<li key={s.url} className="truncate">
+								<a href={s.url} target="_blank" rel="noreferrer" className="hover:underline">
+									{s.title || s.url}
+								</a>{" "}
+								<span className="text-zinc-500">{hostname(s.url)}</span>
+							</li>
+						))}
+					</ul>
+				)}
+			</details>
+		);
+	}
+
 	// No result: waiting for approval, still running, or denied (a denial
 	// streams no result; a reload shows the reason).
 	const status =
@@ -305,6 +349,44 @@ function ToolCall({
 			</div>
 		</details>
 	);
+}
+
+type Source = { url: string; title?: string };
+
+// What web_search and read_webpage (agent-server/tools.py) return, as a label
+// and a list of sources. null for any other tool.
+function webToolView(part: Extract<Part, { type: "tool" }>): { label: string; sources: Source[] } | null {
+	if (part.name !== "web_search" && part.name !== "read_webpage") return null;
+	const args = parseJson<{ query?: string; urls?: string[] }>(part.args) ?? {};
+	const result = parseJson<{ results?: Source[]; pages?: Source[]; error?: string }>(part.result);
+	if (part.name === "web_search") {
+		const query = args.query ? `“${args.query}”` : "the web";
+		if (!result) return { label: `Searching ${query}`, sources: [] };
+		if (result.error) return { label: `Search failed: ${result.error}`, sources: [] };
+		return { label: `Searched ${query} · ${result.results?.length ?? 0} results`, sources: result.results ?? [] };
+	}
+	const count = args.urls?.length ?? 0;
+	if (!result) return { label: `Reading ${count === 1 ? "a page" : `${count} pages`}`, sources: [] };
+	if (result.error) return { label: `Reading failed: ${result.error}`, sources: [] };
+	const pages = result.pages ?? [];
+	return { label: `Read ${pages.length === 1 ? "1 page" : `${pages.length} pages`}`, sources: pages };
+}
+
+function parseJson<T>(text: string | undefined): T | null {
+	if (!text) return null;
+	try {
+		return JSON.parse(text) as T;
+	} catch {
+		return null;
+	}
+}
+
+function hostname(url: string) {
+	try {
+		return new URL(url).hostname.replace(/^www\./, "");
+	} catch {
+		return "";
+	}
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -348,6 +430,15 @@ function ChevronIcon() {
 	return (
 		<svg {...icon} width={14} height={14} className="transition-transform group-open:rotate-90">
 			<path d="m9 6 6 6-6 6" />
+		</svg>
+	);
+}
+
+function GlobeIcon() {
+	return (
+		<svg {...icon} width={14} height={14}>
+			<circle cx="12" cy="12" r="9" />
+			<path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
 		</svg>
 	);
 }
