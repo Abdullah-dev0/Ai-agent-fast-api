@@ -21,6 +21,7 @@ from pathlib import Path
 import uvicorn
 from ag_ui.core import RunAgentInput
 from ag_ui_langgraph import LangGraphAgent
+from ag_ui_langgraph.interrupts import lg_interrupt_to_agui
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,7 +35,7 @@ from history import to_ui_messages
 # Reuse the Next.js app's .env: GEMINI_API_KEY and DATABASE_URL live there.
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from agent import build_graph  # noqa: E402  (needs the env vars loaded first)
+from agent import build_graph, threads_to_delete  # noqa: E402  (needs the env vars loaded first)
 
 
 @asynccontextmanager
@@ -48,7 +49,15 @@ async def lifespan(app: FastAPI):
         AsyncConnectionPool(os.environ["DATABASE_URL"], kwargs={"autocommit": True}, open=False) as pool,
     ):
         await pool.open()
-        runs.init(pool)
+
+        async def after_run(thread_id: str) -> None:
+            # The user approved delete_chat_history during this reply: delete
+            # the thread now that the agent has stopped writing to it.
+            if thread_id in threads_to_delete:
+                threads_to_delete.discard(thread_id)
+                await checkpointer.adelete_thread(thread_id)
+
+        runs.init(pool, after_run)
         await checkpointer.setup()  # creates LangGraph's tables once; safe to repeat
         graph = build_graph(checkpointer)
         app.state.graph = graph  # the history route reads threads from it
@@ -63,6 +72,11 @@ async def lifespan(app: FastAPI):
             # At most 12 graph steps per run (one tool round trip is 2), so a model
             # that keeps calling tools cannot loop forever. LangGraph's default is 25.
             config={"recursion_limit": 12},
+            # When the agent calls interrupt() (an approval), end the run with
+            # RUN_FINISHED outcome "interrupt" and accept the answer in
+            # RunAgentInput.resume[]: the standard AG-UI way, which TanStack reads.
+            emit_interrupt_outcome=True,
+            enable_legacy_on_interrupt_event=False,
         )
         yield
 
@@ -107,11 +121,19 @@ async def chat_history_or_rejoin(
     state = await request.app.state.graph.aget_state({"configurable": {"thread_id": threadId}})
     messages = state.values.get("messages", []) if state else []
     run_id = await runs.active_run(threadId)
+    # Approvals still waiting for an answer, so a reloaded page shows them again.
+    pending = [i for task in (state.tasks if state else ()) for i in task.interrupts]
+    interrupts = None
+    if pending and not run_id:
+        interrupts = {
+            "runId": await runs.latest_run(threadId) or "",
+            "pending": [lg_interrupt_to_agui(i).model_dump(by_alias=True, exclude_none=True) for i in pending],
+        }
     return {
         "messages": to_ui_messages(messages),
         # useChat sees this, then rejoins with GET ?runId=...&offset=-1.
         "activeRun": {"runId": run_id} if run_id else None,
-        "interrupts": None,
+        "interrupts": interrupts,
     }
 
 

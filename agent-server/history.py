@@ -18,6 +18,14 @@ def text_of(content) -> str:
     return "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
 
 
+def thoughts_of(content) -> list[str]:
+    """Gemini's reasoning summaries (include_thoughts=True), saved on the message
+    as {"type": "thinking", "thinking": "..."} blocks."""
+    if isinstance(content, str):
+        return []
+    return [p["thinking"] for p in content if isinstance(p, dict) and p.get("type") == "thinking" and p.get("thinking")]
+
+
 def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
     # A tool's result is its own message in LangGraph; in the UI it belongs on
     # the tool call that asked for it.
@@ -29,7 +37,9 @@ def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
         if isinstance(m, HumanMessage):
             ui.append({"id": m.id, "role": "user", "parts": [{"type": "text", "content": text_of(m.content)}]})
         elif isinstance(m, AIMessage):
-            parts = [
+            # Reasoning first, as it streamed: TanStack's `thinking` parts.
+            parts = [{"type": "thinking", "content": thought} for thought in thoughts_of(m.content)]
+            parts += [
                 {
                     "type": "tool-call",
                     "id": call["id"],

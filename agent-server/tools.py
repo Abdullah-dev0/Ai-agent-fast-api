@@ -82,4 +82,18 @@ def calculate(expression: str) -> str:
         return f"Could not calculate {expression!r}: {error}"
 
 
-TOOLS = [get_current_time, get_weather, calculate]
+@tool
+def delete_chat_history() -> str:
+    """Delete this whole conversation, every message, for good. Use it only when
+    the user asks to delete or clear the chat. The user must approve it first."""
+    # The deletion itself happens once the reply ends (see main.py), so it does
+    # not erase the conversation while the agent is still writing to it.
+    return "Approved: the whole chat history is deleted as soon as this reply ends."
+
+
+TOOLS = [get_current_time, get_weather, calculate, delete_chat_history]
+
+# Tools the user must approve before they run (see run_tools in agent.py).
+NEEDS_APPROVAL = {
+    "delete_chat_history": "Delete this whole conversation? This cannot be undone.",
+}

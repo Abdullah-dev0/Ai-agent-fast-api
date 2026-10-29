@@ -20,7 +20,7 @@ partial reply instead of waiting forever.
 
 import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 from ag_ui.core import EventType, RunAgentInput, RunErrorEvent
 from ag_ui.encoder import EventEncoder
@@ -43,13 +43,15 @@ KEEP_FINISHED = "1 hour"
 
 encoder = EventEncoder(accept="text/event-stream")
 _pool: AsyncConnectionPool | None = None
+_after_run: Callable[[str], Awaitable[None]] | None = None
 _tasks: dict[str, asyncio.Task] = {}  # runs driven by this server (also keeps tasks alive)
 _wake: dict[str, asyncio.Event] = {}  # wakes this server's readers when an event is saved
 
 
-def init(pool: AsyncConnectionPool) -> None:
-    global _pool
-    _pool = pool
+def init(pool: AsyncConnectionPool, after_run: Callable[[str], Awaitable[None]] | None = None) -> None:
+    """`after_run(thread_id)` runs when a reply ends, before it is marked finished."""
+    global _pool, _after_run
+    _pool, _after_run = pool, after_run
 
 
 async def _query(sql: str, params: tuple = ()) -> list[tuple]:
@@ -124,6 +126,11 @@ async def start_run(agent: LangGraphAgent, input: RunAgentInput) -> None:
             await _append(input.run_id, _error(str(error), "error"))
         finally:
             beat.cancel()
+            if _after_run:
+                try:
+                    await _after_run(input.thread_id)
+                except Exception as error:
+                    await _append(input.run_id, _error(f"Cleanup after the reply failed: {error}", "error"))
             await _finish(input.run_id)
             _tasks.pop(input.run_id, None)
 
@@ -192,6 +199,14 @@ async def active_run(thread_id: str) -> str | None:
     rows = await _query(
         "SELECT run_id FROM agent_runs WHERE thread_id = %s AND status = 'running' ORDER BY created_at DESC LIMIT 1",
         (thread_id,),
+    )
+    return rows[0][0] if rows else None
+
+
+async def latest_run(thread_id: str) -> str | None:
+    """The thread's most recent run, e.g. the one a pending approval paused."""
+    rows = await _query(
+        "SELECT run_id FROM agent_runs WHERE thread_id = %s ORDER BY created_at DESC LIMIT 1", (thread_id,)
     )
     return rows[0][0] if rows else None
 
