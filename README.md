@@ -13,19 +13,6 @@ npm run migrate             # Better Auth tables + db/migrations/*.sql
 npm run dev                 # http://localhost:3000
 ```
 
-## Chat that survives a reload
-
-`/chat` uses TanStack AI with Google Gemini (`gemini-3.5-flash`). On every turn,
-`withPersistence` saves the whole transcript to the `chat_threads` table, and on
-mount `useChat({ persistence: true })` reloads it with `GET /api/chat?threadId=`.
-
-| File | What it does |
-|---|---|
-| `lib/chat-persistence.ts` | Message store against Postgres (load = `[]` if missing, save = full overwrite) |
-| `app/api/chat/route.ts` | `POST` streams the reply, `GET` hydrates; both check the thread belongs to the user |
-| `components/chat.tsx` | `useChat` with server-side persistence, nothing kept in the browser |
-| `db/migrations/` | Versioned SQL, applied by `npm run migrate`, never at request time |
-
 ## Where to look
 
 | File | What it shows |

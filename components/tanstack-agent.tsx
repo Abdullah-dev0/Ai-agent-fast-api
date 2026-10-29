@@ -5,7 +5,7 @@ import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
 
 const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL ?? "http://127.0.0.1:8123/agent";
 
-// The same useChat as /chat, but pointed straight at the Python agent server.
+// TanStack's useChat, pointed straight at the Python agent server.
 // Both speak AG-UI, so sending and streaming work with no Next.js route.
 // `persistence: true` = the server owns the history. On page load useChat calls
 // GET <AGENT_URL>?threadId=... and the Python server answers from LangGraph's
