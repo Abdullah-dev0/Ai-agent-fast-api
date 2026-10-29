@@ -25,7 +25,7 @@ in the top menu.
 | `agent.py` | The agent, built with LangGraph like its quickstart: ask Gemini, run any tools it asked for, loop until it answers. |
 | `main.py` | FastAPI. Connects to Postgres, builds the agent, and exposes it at `POST /agent`, plus `GET /agent?threadId=` for the saved chat. |
 | `history.py` | Turns a saved LangGraph thread into the `{ id, role, parts }` messages TanStack's `useChat` shows after a reload. |
-| `runs.py` | Replies that survive a refresh: runs the agent in the background and keeps a numbered log of its events, so a reloaded page can rejoin. |
+| `runs.py` | Replies that survive a refresh: runs the agent in the background and saves a numbered log of its events in Postgres, so a reloaded page can rejoin. |
 
 ## Refreshing in the middle of a reply (`runs.py`)
 
@@ -39,11 +39,32 @@ Written by hand to follow the protocol TanStack's `useChat` speaks:
 | Rejoin | `GET /agent?runId=...&offset=-1` | Replays the log from the start, then streams the rest live |
 
 The agent no longer runs inside the HTTP response, so closing the tab does not
-stop it; the reply finishes and is saved either way. Logs live in this
-process's memory and are dropped 60 seconds after a run ends, so a server
-restart in the middle of a reply loses that reply (the finished ones are in
-Postgres). `ag-ui-langgraph`'s own `add_langgraph_fastapi_endpoint` is no longer
-used, because it runs the agent inside the response.
+stop it; the reply finishes and is saved either way. `ag-ui-langgraph`'s own
+`add_langgraph_fastapi_endpoint` is no longer used, because it runs the agent
+inside the response.
+
+**Where the log lives:** Postgres, in two tables from
+`db/migrations/0003_agent_run_log.sql` (applied with `npm run migrate`):
+
+| Table | Holds |
+|---|---|
+| `agent_runs` | One row per reply: `status` (`running` / `finished`), `cancel_requested`, `heartbeat_at` |
+| `agent_run_events` | Every event of a reply, numbered (`seq`), exactly as sent to the browser |
+
+So any server can serve a rejoin, and a restart keeps what was written:
+
+- **Stop** (`POST /agent/stop`) sets `cancel_requested`. The server running
+  that reply checks it with its heartbeat every 2 s and cancels the run.
+- **Server crash or restart mid-reply:** the reply cannot continue (the agent
+  was running inside that server), but its events are saved. A run whose
+  heartbeat is silent for 30 s is closed with "The server restarted before the
+  reply finished.", so a reloaded page shows the partial reply instead of
+  waiting forever.
+- **Limits:** a run may take 120 s (`AGENT_RUN_TIMEOUT_SECONDS`), each Gemini
+  call 60 s with 2 retries, and 12 graph steps. Finished logs are deleted after
+  an hour; the conversation itself stays in the checkpointer.
+- Readers on the same server are woken as soon as an event is saved; readers on
+  another server check for new events every 0.5 s.
 
 ## How one message travels
 
