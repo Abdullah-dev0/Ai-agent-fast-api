@@ -9,16 +9,12 @@ async function UserAgent() {
 	return <AgentChat threadId={`tanstack:${user.id}`} />;
 }
 
+// A LangGraph agent in Python (agent-server/), streamed over AG-UI to our own
+// useAgentChat hook (lib/use-agent-chat.ts).
 export default function AgentPage() {
 	return (
-		<div className="flex flex-col gap-4">
-			<h1 className="text-2xl font-semibold">Agent</h1>
-			<p className="text-sm text-zinc-500">
-				A LangGraph agent in Python (agent-server/), streamed over AG-UI to our own useAgentChat hook.
-			</p>
-			<Suspense fallback={<p className="text-sm text-zinc-500">Loading...</p>}>
-				<UserAgent />
-			</Suspense>
-		</div>
+		<Suspense fallback={<p className="animate-pulse text-sm text-zinc-500">Loading chat…</p>}>
+			<UserAgent />
+		</Suspense>
 	);
 }
