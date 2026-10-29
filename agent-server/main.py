@@ -26,9 +26,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
 
+import runs
 from history import to_ui_messages
-from runs import active, cancel_run, parse_offset, runs, start_run
 
 # Reuse the Next.js app's .env: GEMINI_API_KEY and DATABASE_URL live there.
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -40,7 +41,14 @@ from agent import build_graph  # noqa: E402  (needs the env vars loaded first)
 async def lifespan(app: FastAPI):
     # One Postgres connection pool for the whole server life. The checkpointer
     # stores every conversation (per thread_id) in the same Postgres as the app.
-    async with AsyncPostgresSaver.from_conn_string(os.environ["DATABASE_URL"]) as checkpointer:
+    async with (
+        AsyncPostgresSaver.from_conn_string(os.environ["DATABASE_URL"]) as checkpointer,
+        # Connections for the reply logs (runs.py). autocommit: each query stands
+        # alone, so a saved event is visible to other servers immediately.
+        AsyncConnectionPool(os.environ["DATABASE_URL"], kwargs={"autocommit": True}, open=False) as pool,
+    ):
+        await pool.open()
+        runs.init(pool)
         await checkpointer.setup()  # creates LangGraph's tables once; safe to repeat
         graph = build_graph(checkpointer)
         app.state.graph = graph  # the history route reads threads from it
@@ -70,15 +78,15 @@ def sse(events) -> StreamingResponse:
 # one runs the agent inside the response, so a refresh would stop the reply.
 @app.post("/agent")
 async def run_agent(input: RunAgentInput, request: Request):
-    log = runs.get(input.run_id)
+    exists = await runs.run_exists(input.run_id)
     last_seen = request.headers.get("last-event-id")
-    if log and last_seen is not None:
+    if exists and last_seen is not None:
         # The connection dropped and useChat retried the same POST: do not run the
         # agent again, just continue the log after the last event it received.
-        return sse(log.read(parse_offset(last_seen)))
-    if log is None:
-        log = start_run(request.app.state.agent, input)
-    return sse(log.read(0))
+        return sse(runs.read(input.run_id, runs.parse_offset(last_seen)))
+    if not exists:
+        await runs.start_run(request.app.state.agent, input)
+    return sse(runs.read(input.run_id, 0))
 
 
 @app.get("/agent")
@@ -90,16 +98,15 @@ async def chat_history_or_rejoin(
     if runId is not None:
         # A reloaded page rejoining a reply: replay it (offset -1 = from the
         # start) and keep streaming until it ends.
-        log = runs.get(runId)
-        if log is None:
+        if not await runs.run_exists(runId):
             raise HTTPException(404, "Unknown or expired run")
-        return sse(log.read(parse_offset(request.headers.get("last-event-id") or offset)))
+        return sse(runs.read(runId, runs.parse_offset(request.headers.get("last-event-id") or offset)))
 
     if threadId is None:
         raise HTTPException(400, "threadId or runId is required")
     state = await request.app.state.graph.aget_state({"configurable": {"thread_id": threadId}})
     messages = state.values.get("messages", []) if state else []
-    run_id = active.get(threadId)
+    run_id = await runs.active_run(threadId)
     return {
         "messages": to_ui_messages(messages),
         # useChat sees this, then rejoins with GET ?runId=...&offset=-1.
@@ -116,7 +123,7 @@ async def stop_run(threadId: str):
     is all useChat's stop() does) no longer stops them. Same caveat as above:
     no login check, so keep this server private.
     """
-    return {"stopped": cancel_run(threadId)}
+    return {"stopped": await runs.cancel_run(threadId)}
 
 
 @app.delete("/agent")

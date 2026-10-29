@@ -1,16 +1,21 @@
 """Replies that survive a page refresh, written by hand to match TanStack's protocol.
 
-The idea, in three parts:
+The idea:
 1. The agent runs in a background task, not inside the HTTP response, so it
    keeps going when the browser disconnects (a refresh, a closed tab).
-2. Every event it produces goes into a RunLog, numbered 1, 2, 3...
-3. Any request can read a RunLog from a position onwards: the original POST,
-   a reconnect (Last-Event-ID header), or a reloaded page rejoining (GET ?runId=).
+2. Every event it produces is saved in Postgres (agent_run_events), numbered
+   1, 2, 3... (tables in db/migrations/0003_agent_run_log.sql).
+3. Any request on any server can read a run from a position onwards: the
+   original POST, a reconnect (Last-Event-ID header), or a reloaded page
+   rejoining (GET ?runId=).
 
 Each event goes out as "id: <number>" + "data: <event>". TanStack remembers the
 last id it saw and sends it back when it reconnects, so we know where to resume.
 
-Logs live in this process's memory: a server restart mid-reply loses them.
+Because the log is in Postgres, a server restart keeps everything written so
+far. The reply itself cannot continue (the agent ran inside that server), so a
+run whose heartbeat stops is closed with an error and the page shows the
+partial reply instead of waiting forever.
 """
 
 import asyncio
@@ -20,98 +25,188 @@ from collections.abc import AsyncIterator
 from ag_ui.core import EventType, RunAgentInput, RunErrorEvent
 from ag_ui.encoder import EventEncoder
 from ag_ui_langgraph import LangGraphAgent
+from psycopg_pool import AsyncConnectionPool
 
-# How long a finished run's log is kept, so a page that reloads just as the
-# reply ends can still replay it.
-KEEP_FINISHED_SECONDS = 60
 # The most one run may take, all model and tool calls included. Past this it is
 # stopped, so a stuck reply cannot stay "running" (and costing) forever.
 RUN_TIMEOUT_SECONDS = float(os.environ.get("AGENT_RUN_TIMEOUT_SECONDS", "120"))
+# A running reply refreshes its heartbeat this often; one silent for longer
+# than HEARTBEAT_DEAD_SECONDS belonged to a server that crashed or restarted.
+HEARTBEAT_SECONDS = 2
+HEARTBEAT_DEAD_SECONDS = 30
+# Readers on another server have no direct signal, so they look for new
+# events this often. Readers on the same server are woken right away.
+POLL_SECONDS = 0.5
+# Finished runs are deleted after this long; their messages are already in
+# the agent's own memory (the LangGraph checkpointer).
+KEEP_FINISHED = "1 hour"
+
+encoder = EventEncoder(accept="text/event-stream")
+_pool: AsyncConnectionPool | None = None
+_tasks: dict[str, asyncio.Task] = {}  # runs driven by this server (also keeps tasks alive)
+_wake: dict[str, asyncio.Event] = {}  # wakes this server's readers when an event is saved
 
 
-class RunLog:
-    def __init__(self, thread_id: str):
-        self.thread_id = thread_id
-        self.events: list[str] = []  # encoded "data: ...\n\n" strings, in order
-        self.done = False
-        self._changed = asyncio.Condition()
+def init(pool: AsyncConnectionPool) -> None:
+    global _pool
+    _pool = pool
 
-    async def append(self, encoded: str) -> None:
-        async with self._changed:
-            self.events.append(encoded)
-            self._changed.notify_all()
 
-    async def finish(self) -> None:
-        async with self._changed:
-            self.done = True
-            self._changed.notify_all()
+async def _query(sql: str, params: tuple = ()) -> list[tuple]:
+    assert _pool is not None, "runs.init(pool) was not called"
+    async with _pool.connection() as conn:
+        cursor = await conn.execute(sql, params)
+        return await cursor.fetchall() if cursor.description else []
 
-    async def read(self, after: int) -> AsyncIterator[str]:
-        """Yield SSE events numbered after `after` (0 = from the start), then
-        wait for new ones until the run is done."""
-        position = after
+
+def _wake_readers(run_id: str) -> None:
+    if event := _wake.get(run_id):
+        event.set()
+
+
+def _error(message: str, code: str) -> str:
+    # The page reads RUN_ERROR as "this run is over", so it stops waiting.
+    return encoder.encode(RunErrorEvent(type=EventType.RUN_ERROR, message=message, code=code))
+
+
+async def _append(run_id: str, encoded: str) -> None:
+    # The next number is computed in the INSERT itself, so a dead-run close
+    # from another server can never take the same number.
+    await _query(
+        """INSERT INTO agent_run_events (run_id, seq, event)
+           SELECT %s, coalesce(max(seq), 0) + 1, %s FROM agent_run_events WHERE run_id = %s""",
+        (run_id, encoded, run_id),
+    )
+    _wake_readers(run_id)
+
+
+async def _finish(run_id: str) -> None:
+    await _query("UPDATE agent_runs SET status = 'finished' WHERE run_id = %s", (run_id,))
+    _wake_readers(run_id)
+
+
+async def start_run(agent: LangGraphAgent, input: RunAgentInput) -> None:
+    """Record the run, then start the agent in the background to fill its log."""
+    await _query(
+        f"DELETE FROM agent_runs WHERE status = 'finished' AND created_at < now() - interval '{KEEP_FINISHED}'"
+    )
+    await _query(
+        "INSERT INTO agent_runs (run_id, thread_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+        (input.run_id, input.thread_id),
+    )
+
+    async def heartbeat(task: asyncio.Task) -> None:
+        # Tells other servers this run is alive, and picks up a Stop request
+        # made on any server.
         while True:
-            async with self._changed:
-                await self._changed.wait_for(lambda: len(self.events) > position or self.done)
-                new = self.events[position:]
-                done = self.done
-            for encoded in new:
-                position += 1
-                yield f"id: {position}\n{encoded}"
-            if done and position >= len(self.events):
-                return
-
-
-runs: dict[str, RunLog] = {}  # run id -> its log
-active: dict[str, str] = {}  # thread id -> the run id still being written
-tasks: dict[str, asyncio.Task] = {}  # run id -> its background task (also keeps it alive)
-
-
-def start_run(agent: LangGraphAgent, input: RunAgentInput) -> RunLog:
-    """Start the agent in the background and return the log it fills."""
-    log = RunLog(input.thread_id)
-    runs[input.run_id] = log
-    active[input.thread_id] = input.run_id
-    encoder = EventEncoder(accept="text/event-stream")
-
-    async def fail(message: str, code: str) -> None:
-        # The page reads RUN_ERROR as "this run is over", so it stops waiting.
-        await log.append(encoder.encode(RunErrorEvent(type=EventType.RUN_ERROR, message=message, code=code)))
+            await asyncio.sleep(HEARTBEAT_SECONDS)
+            rows = await _query(
+                "UPDATE agent_runs SET heartbeat_at = now() WHERE run_id = %s RETURNING cancel_requested",
+                (input.run_id,),
+            )
+            if rows and rows[0][0]:
+                task.cancel()
 
     async def drive() -> None:
+        beat = asyncio.create_task(heartbeat(asyncio.current_task()))
         try:
             async with asyncio.timeout(RUN_TIMEOUT_SECONDS):
                 # A fresh copy per run: the agent keeps per-run state on itself.
                 async for event in agent.clone().run(input):
-                    await log.append(encoder.encode(event))
+                    await _append(input.run_id, encoder.encode(event))
         except TimeoutError:
-            await fail(f"The reply took longer than {RUN_TIMEOUT_SECONDS:.0f} s and was stopped.", "timeout")
+            await _append(input.run_id, _error(f"The reply took longer than {RUN_TIMEOUT_SECONDS:.0f} s and was stopped.", "timeout"))
         except asyncio.CancelledError:
-            # cancel_run() below. We started this task ourselves, so we end it
-            # cleanly here instead of re-raising.
-            await fail("Stopped.", "cancelled")
+            # cancel_run() or a Stop picked up by the heartbeat. We started this
+            # task ourselves, so we end it cleanly here instead of re-raising.
+            await _append(input.run_id, _error("Stopped.", "cancelled"))
         except Exception as error:  # surface the failure to the page instead of hanging
-            await fail(str(error), "error")
+            await _append(input.run_id, _error(str(error), "error"))
         finally:
-            await log.finish()
-            if active.get(input.thread_id) == input.run_id:
-                del active[input.thread_id]
-            tasks.pop(input.run_id, None)
-            asyncio.get_running_loop().call_later(KEEP_FINISHED_SECONDS, runs.pop, input.run_id, None)
+            beat.cancel()
+            await _finish(input.run_id)
+            _tasks.pop(input.run_id, None)
 
-    tasks[input.run_id] = asyncio.create_task(drive())
-    return log
+    _tasks[input.run_id] = asyncio.create_task(drive())
 
 
-def cancel_run(thread_id: str) -> bool:
-    """Stop the thread's running reply. Cancelling the task also cancels the
-    Gemini call or tool it is waiting on. Returns False if nothing was running."""
-    run_id = active.get(thread_id)
-    task = tasks.get(run_id) if run_id else None
-    if task is None:
-        return False
-    task.cancel()
-    return True
+async def run_exists(run_id: str) -> bool:
+    return bool(await _query("SELECT 1 FROM agent_runs WHERE run_id = %s", (run_id,)))
+
+
+async def _close_if_dead(run_id: str) -> None:
+    """A run still marked running whose heartbeat stopped: its server is gone.
+    Close it with an error so readers (and reloaded pages) stop waiting."""
+    rows = await _query(
+        f"""UPDATE agent_runs SET status = 'finished'
+            WHERE run_id = %s AND status = 'running'
+              AND heartbeat_at < now() - interval '{HEARTBEAT_DEAD_SECONDS} seconds'
+            RETURNING run_id""",
+        (run_id,),
+    )
+    if rows:
+        await _append(run_id, _error("The server restarted before the reply finished.", "server_restarted"))
+
+
+async def read(run_id: str, after: int) -> AsyncIterator[str]:
+    """Yield SSE events numbered after `after` (0 = from the start), then wait
+    for new ones until the run is finished."""
+    wake = _wake.setdefault(run_id, asyncio.Event())
+    position = after
+    try:
+        while True:
+            wake.clear()
+            # Status first, then events: a run marks itself finished only after
+            # saving its last event, so "finished + no new events" means done.
+            status = await _query("SELECT status FROM agent_runs WHERE run_id = %s", (run_id,))
+            if not status:
+                return
+            rows = await _query(
+                "SELECT seq, event FROM agent_run_events WHERE run_id = %s AND seq > %s ORDER BY seq",
+                (run_id, position),
+            )
+            for seq, event in rows:
+                position = seq
+                yield f"id: {seq}\n{event}"
+            if status[0][0] == "finished" and not rows:
+                return
+            if not rows:
+                await _close_if_dead(run_id)
+                try:
+                    await asyncio.wait_for(wake.wait(), POLL_SECONDS)
+                except TimeoutError:
+                    pass
+    finally:
+        if run_id not in _tasks:
+            _wake.pop(run_id, None)
+
+
+async def active_run(thread_id: str) -> str | None:
+    """The run still being written for this thread, if any (after closing dead ones)."""
+    rows = await _query(
+        "SELECT run_id FROM agent_runs WHERE thread_id = %s AND status = 'running' ORDER BY created_at DESC",
+        (thread_id,),
+    )
+    for (run_id,) in rows:
+        await _close_if_dead(run_id)
+    rows = await _query(
+        "SELECT run_id FROM agent_runs WHERE thread_id = %s AND status = 'running' ORDER BY created_at DESC LIMIT 1",
+        (thread_id,),
+    )
+    return rows[0][0] if rows else None
+
+
+async def cancel_run(thread_id: str) -> bool:
+    """Stop the thread's running reply, on whichever server runs it. Returns
+    False if nothing was running."""
+    rows = await _query(
+        "UPDATE agent_runs SET cancel_requested = true WHERE thread_id = %s AND status = 'running' RETURNING run_id",
+        (thread_id,),
+    )
+    for (run_id,) in rows:
+        if task := _tasks.get(run_id):
+            task.cancel()  # ours: stop now; another server's heartbeat picks up the flag
+    return bool(rows)
 
 
 def parse_offset(value: str | None) -> int:
