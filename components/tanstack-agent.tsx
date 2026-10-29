@@ -5,6 +5,15 @@ import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
 
 const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL ?? "http://127.0.0.1:8123/agent";
 
+// What HumanInTheLoopMiddleware (interrupt_mode="per_call") asks the user.
+type ToolApprovalRequest = {
+	type: "tool_approval";
+	tool_call_id: string;
+	name: string;
+	args: Record<string, unknown>;
+	description: string;
+};
+
 // TanStack's useChat, pointed straight at the Python agent server.
 // Both speak AG-UI, so sending and streaming work with no Next.js route.
 // `persistence: true` = the server owns the history. On page load useChat calls
@@ -28,22 +37,34 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 		m.parts.some((p) => ((p.type === "text" || p.type === "thinking") && p.content) || p.type === "tool-call");
 	const last = messages.at(-1);
 	const thinking = isLoading && !(last?.role === "assistant" && shown(last));
-	// The agent paused for approval (interrupt() in agent.py). These come from the
-	// Python server, so TanStack lists them as "unbound": shown, but answered by us.
-	const approvals = interrupts.filter((i) => i.reason === "tool-approval");
+	// The agent paused for approval (HumanInTheLoopMiddleware in agent.py). Its
+	// request ({ type: "tool_approval", name, args, description }) arrives in the
+	// interrupt's metadata. These come from the Python server, so TanStack lists
+	// them as "unbound": shown, but answered by us.
+	const approvals = interrupts.flatMap((i) => {
+		const request = (i.metadata?.langgraph as { raw?: ToolApprovalRequest } | undefined)?.raw;
+		return request?.type === "tool_approval" ? [{ id: i.id, ...request }] : [];
+	});
 
 	function answer(approval: (typeof approvals)[number], approved: boolean) {
 		startAnswer(async () => {
 			// Sends AG-UI's `resume` field through this chat's own connection and
-			// streams the continued reply right here: interrupt() in agent.py
-			// returns { approved }. ("Unsafe" = TanStack's low-level escape hatch;
-			// its safer bound methods only work for interrupts its own JS server made.)
-			await resumeInterruptsUnsafe([{ interruptId: approval.id, status: "resolved", payload: { approved } }]);
-			// The server deleted the thread; empty the screen too, or the next
-			// message would send the old ones back.
-			const raw = approval.metadata?.langgraph as { raw?: { tool?: string } } | undefined;
-			if (approved && raw?.raw?.tool === "delete_chat_history") clear();
+			// streams the continued reply right here; the middleware reads it as its
+			// decision. ("Unsafe" = TanStack's low-level escape hatch; its safer
+			// bound methods only work for interrupts its own JS server made.)
+			await resumeInterruptsUnsafe([
+				{ interruptId: approval.id, status: "resolved", payload: { type: approved ? "approve" : "reject" } },
+			]);
+			// The reply has ended: now delete the thread and empty the screen.
+			if (approved && approval.name === "delete_chat_history") await deleteThread();
 		});
+	}
+
+	async function deleteThread() {
+		// Delete the thread from the agent's memory (DELETE /agent in main.py),
+		// otherwise the next reload would load it right back.
+		await fetch(`${AGENT_URL}?threadId=${encodeURIComponent(threadId)}`, { method: "DELETE" });
+		clear(); // and empty the screen
 	}
 
 	function submit(e: React.FormEvent) {
@@ -54,21 +75,9 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 		setInput("");
 	}
 
-	function stopReply() {
-		// useChat's stop() only closes this browser's connection; the reply keeps
-		// running on the server (runs.py). This asks the server to stop it too.
-		stop();
-		void fetch(`${AGENT_URL}/stop?threadId=${encodeURIComponent(threadId)}`, { method: "POST" });
-	}
-
 	function clearChat() {
 		if (!confirm("Clear this chat? This cannot be undone.")) return;
-		startClear(async () => {
-			// Delete the thread from the agent's memory (DELETE /agent in main.py),
-			// otherwise the next reload would load it right back.
-			await fetch(`${AGENT_URL}?threadId=${encodeURIComponent(threadId)}`, { method: "DELETE" });
-			clear(); // and empty the screen
-		});
+		startClear(deleteThread);
 	}
 
 	useEffect(() => {
@@ -111,9 +120,16 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 								// useChat fills `output` from the TOOL_CALL_RESULT event (live) and
 								// history.py fills it after a reload, so one field covers both.
 								const output = part.output;
-								// No result yet: either paused for the user's approval, or still running.
+								// No result: paused for the user's approval, still running, or
+								// denied (the denial streams no result; a reload shows it).
 								const status =
-									output !== undefined ? "Used" : approvals.length > 0 ? "Waiting for approval:" : "Running";
+									output !== undefined
+										? "Used"
+										: approvals.length > 0
+											? "Waiting for approval:"
+											: isLoading
+												? "Running"
+												: "Not run:";
 								const hasInput = part.arguments && part.arguments !== "{}";
 								return (
 									<span
@@ -147,7 +163,7 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 				<div
 					key={approval.id}
 					className="flex flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
-					<span>{approval.message ?? "The agent needs your approval to continue."}</span>
+					<span>{approval.description || "The agent needs your approval to continue."}</span>
 					<div className="flex gap-2">
 						<button
 							type="button"
@@ -179,7 +195,8 @@ export function TanstackAgent({ threadId }: { threadId: string }) {
 				{isLoading ? (
 					<button
 						type="button"
-						onClick={stopReply}
+						// Closes the connection, which also stops the reply on the server.
+						onClick={() => stop()}
 						className="rounded-md border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700">
 						Stop
 					</button>

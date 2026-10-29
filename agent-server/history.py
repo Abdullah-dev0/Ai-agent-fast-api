@@ -1,7 +1,7 @@
 """Turn a LangGraph thread into the chat history TanStack's useChat expects.
 
 With `persistence: true`, useChat loads a thread on page load with
-GET <url>?threadId=... and expects { messages, activeRun, interrupts }, where
+GET <url>?threadId=... and expects { messages, interrupts }, where
 each message is { id, role, parts }. LangGraph already saved the thread
 (checkpointer); this file only changes its shape.
 """
@@ -39,17 +39,19 @@ def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
         elif isinstance(m, AIMessage):
             # Reasoning first, as it streamed: TanStack's `thinking` parts.
             parts = [{"type": "thinking", "content": thought} for thought in thoughts_of(m.content)]
-            parts += [
-                {
+            for call in m.tool_calls:
+                part = {
                     "type": "tool-call",
                     "id": call["id"],
                     "name": call["name"],
                     "arguments": json.dumps(call["args"]),
                     "state": "complete",
-                    "output": results.get(call["id"]),
                 }
-                for call in m.tool_calls
-            ]
+                # No result yet (waiting for approval): leave `output` out, so the
+                # page shows "Waiting for approval" instead of "Used ... null".
+                if call["id"] in results:
+                    part["output"] = results[call["id"]]
+                parts.append(part)
             if text := text_of(m.content):
                 parts.append({"type": "text", "content": text})
             if parts:
