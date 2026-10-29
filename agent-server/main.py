@@ -1,6 +1,9 @@
 """FastAPI server that exposes the LangGraph agent over AG-UI.
 
-POST   /agent                       run the agent; streams AG-UI events (TanStack's
+It never runs the agent itself: POST /agent queues a run, and worker.py runs it.
+Start both:  uv run main.py   and   uv run worker.py
+
+POST   /agent                       queue a run; streams its AG-UI events (TanStack's
                                     useChat reads them)
 GET    /agent?threadId=...          the saved chat, plus the run still being
                                     written (for useChat's `persistence: true`)
@@ -8,8 +11,6 @@ GET    /agent?runId=...&offset=...  rejoin a run after a refresh (runs.py)
 POST   /agent/stop?threadId=...     stop the reply being written for that thread
 DELETE /agent?threadId=...          clear that chat from the agent's memory
 GET    /agent/health                simple health check
-
-Run it with:  uv run main.py
 """
 
 import asyncio
@@ -20,7 +21,6 @@ from pathlib import Path
 
 import uvicorn
 from ag_ui.core import RunAgentInput
-from ag_ui_langgraph import LangGraphAgent
 from ag_ui_langgraph.interrupts import lg_interrupt_to_agui
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -35,7 +35,7 @@ from history import to_ui_messages
 # Reuse the Next.js app's .env: GEMINI_API_KEY and DATABASE_URL live there.
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from agent import build_graph, threads_to_delete  # noqa: E402  (needs the env vars loaded first)
+from agent import build_graph  # noqa: E402  (needs the env vars loaded first)
 
 
 @asynccontextmanager
@@ -49,35 +49,12 @@ async def lifespan(app: FastAPI):
         AsyncConnectionPool(os.environ["DATABASE_URL"], kwargs={"autocommit": True}, open=False) as pool,
     ):
         await pool.open()
-
-        async def after_run(thread_id: str) -> None:
-            # The user approved delete_chat_history during this reply: delete
-            # the thread now that the agent has stopped writing to it.
-            if thread_id in threads_to_delete:
-                threads_to_delete.discard(thread_id)
-                await checkpointer.adelete_thread(thread_id)
-
-        runs.init(pool, after_run)
+        runs.init(pool)
         await checkpointer.setup()  # creates LangGraph's tables once; safe to repeat
-        graph = build_graph(checkpointer)
-        app.state.graph = graph  # the history route reads threads from it
-        app.state.checkpointer = checkpointer  # the clear route deletes threads with it
-        app.state.agent = LangGraphAgent(
-            name="assistant",
-            description="Gemini agent with tools",
-            graph=graph,
-            # RAW events copy LangGraph's internal events for debugging only and
-            # are most of the bytes on the wire; the chat UIs do not need them.
-            emit_raw_events=False,
-            # At most 12 graph steps per run (one tool round trip is 2), so a model
-            # that keeps calling tools cannot loop forever. LangGraph's default is 25.
-            config={"recursion_limit": 12},
-            # When the agent calls interrupt() (an approval), end the run with
-            # RUN_FINISHED outcome "interrupt" and accept the answer in
-            # RunAgentInput.resume[]: the standard AG-UI way, which TanStack reads.
-            emit_interrupt_outcome=True,
-            enable_legacy_on_interrupt_event=False,
-        )
+        # The API only reads threads (history) and deletes them (clear); the
+        # worker is what runs the graph.
+        app.state.graph = build_graph(checkpointer)
+        app.state.checkpointer = checkpointer
         yield
 
 
@@ -99,7 +76,7 @@ async def run_agent(input: RunAgentInput, request: Request):
         # agent again, just continue the log after the last event it received.
         return sse(runs.read(input.run_id, runs.parse_offset(last_seen)))
     if not exists:
-        await runs.start_run(request.app.state.agent, input)
+        await runs.enqueue_run(input)  # a worker (worker.py) runs it
     return sse(runs.read(input.run_id, 0))
 
 

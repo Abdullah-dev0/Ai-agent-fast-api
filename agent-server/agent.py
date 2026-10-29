@@ -10,6 +10,7 @@ in plain text, the graph ends.
 
 from typing import Literal
 
+from ag_ui_langgraph import LangGraphAgent
 from langchain.chat_models import init_chat_model
 from langchain.messages import SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -67,10 +68,12 @@ async def run_tools(state: MessagesState, config: RunnableConfig) -> dict:
                 "reason": "tool-approval",
                 "message": NEEDS_APPROVAL[call["name"]],
                 "toolCallId": call["id"],
+                "tool": call["name"],  # lets the page know what was approved
             })
             if not (isinstance(answer, dict) and answer.get("approved")):
                 results.append(ToolMessage(
-                    content="The user did not approve this, so it was not done.",
+                    content="The user clicked Deny, so this was cancelled and nothing was done. "
+                    "Tell them it was cancelled; do not ask again unless they ask.",
                     tool_call_id=call["id"],
                     id=f"tool-{call['id']}",
                 ))
@@ -105,3 +108,23 @@ def build_graph(checkpointer: BaseCheckpointSaver):
     builder.add_edge("run_tools", "call_model")
     # The checkpointer saves the state after every step, per thread_id.
     return builder.compile(checkpointer=checkpointer)
+
+
+def build_agui_agent(graph) -> LangGraphAgent:
+    """Wrap the graph so it streams AG-UI events (what TanStack's useChat reads)."""
+    return LangGraphAgent(
+        name="assistant",
+        description="Gemini agent with tools",
+        graph=graph,
+        # RAW events copy LangGraph's internal events for debugging only and
+        # are most of the bytes on the wire; the chat UIs do not need them.
+        emit_raw_events=False,
+        # At most 12 graph steps per run (one tool round trip is 2), so a model
+        # that keeps calling tools cannot loop forever. LangGraph's default is 25.
+        config={"recursion_limit": 12},
+        # When the agent calls interrupt() (an approval), end the run with
+        # RUN_FINISHED outcome "interrupt" and accept the answer in
+        # RunAgentInput.resume[]: the standard AG-UI way, which TanStack reads.
+        emit_interrupt_outcome=True,
+        enable_legacy_on_interrupt_event=False,
+    )

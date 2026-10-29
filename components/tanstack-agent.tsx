@@ -11,19 +11,12 @@ const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL ?? "http://127.0.0.1:8123/ag
 // GET <AGENT_URL>?threadId=... and the Python server answers from LangGraph's
 // checkpointer (agent-server/history.py), so a reload shows the chat again.
 export function TanstackAgent({ threadId }: { threadId: string }) {
-	// Bumping the key remounts the chat, which does what a page refresh does:
-	// load the history and rejoin the reply that is running. Used after an approval.
-	const [session, setSession] = useState(0);
-	return <Chat key={session} threadId={threadId} onRemount={() => setSession((s) => s + 1)} />;
-}
-
-function Chat({ threadId, onRemount }: { threadId: string; onRemount: () => void }) {
 	const [input, setInput] = useState("");
 	const bottomRef = useRef<HTMLDivElement>(null);
 
 	const [clearing, startClear] = useTransition();
 	const [answering, startAnswer] = useTransition();
-	const { messages, sendMessage, isLoading, isHydrating, error, clear, stop, interrupts } = useChat({
+	const { messages, sendMessage, isLoading, isHydrating, error, clear, stop, interrupts, resumeInterruptsUnsafe } = useChat({
 		threadId,
 		persistence: true,
 		connection: fetchServerSentEvents(AGENT_URL),
@@ -39,24 +32,17 @@ function Chat({ threadId, onRemount }: { threadId: string; onRemount: () => void
 	// Python server, so TanStack lists them as "unbound": shown, but answered by us.
 	const approvals = interrupts.filter((i) => i.reason === "tool-approval");
 
-	function answer(interruptId: string, approved: boolean) {
+	function answer(approval: (typeof approvals)[number], approved: boolean) {
 		startAnswer(async () => {
-			// AG-UI's resume field: the server continues the paused run with this
-			// answer (interrupt() returns { approved }). messages stays empty because
-			// the agent already has the conversation.
-			const res = await fetch(AGENT_URL, {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					threadId,
-					runId: crypto.randomUUID(),
-					messages: [],
-					resume: [{ interruptId, status: "resolved", payload: { approved } }],
-				}),
-			});
-			// The reply runs in the background on the server; we do not read it here.
-			await res.body?.cancel();
-			onRemount(); // like a refresh: reload the history and rejoin that reply
+			// Sends AG-UI's `resume` field through this chat's own connection and
+			// streams the continued reply right here: interrupt() in agent.py
+			// returns { approved }. ("Unsafe" = TanStack's low-level escape hatch;
+			// its safer bound methods only work for interrupts its own JS server made.)
+			await resumeInterruptsUnsafe([{ interruptId: approval.id, status: "resolved", payload: { approved } }]);
+			// The server deleted the thread; empty the screen too, or the next
+			// message would send the old ones back.
+			const raw = approval.metadata?.langgraph as { raw?: { tool?: string } } | undefined;
+			if (approved && raw?.raw?.tool === "delete_chat_history") clear();
 		});
 	}
 
@@ -125,12 +111,18 @@ function Chat({ threadId, onRemount }: { threadId: string; onRemount: () => void
 								// useChat fills `output` from the TOOL_CALL_RESULT event (live) and
 								// history.py fills it after a reload, so one field covers both.
 								const output = part.output;
+								// No result yet: either paused for the user's approval, or still running.
+								const status =
+									output !== undefined ? "Used" : approvals.length > 0 ? "Waiting for approval:" : "Running";
+								const hasInput = part.arguments && part.arguments !== "{}";
 								return (
 									<span
 										key={i}
 										className="mb-1 block rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 dark:border-zinc-800">
-										<span className="font-medium">Used {part.name}</span>
-										<span className="block font-mono">input: {part.arguments}</span>
+										<span className="font-medium">
+											{status} {part.name}
+										</span>
+										{hasInput && <span className="block font-mono">input: {part.arguments}</span>}
 										{output !== undefined && <span className="block font-mono">output: {String(output)}</span>}
 									</span>
 								);
@@ -159,14 +151,14 @@ function Chat({ threadId, onRemount }: { threadId: string; onRemount: () => void
 					<div className="flex gap-2">
 						<button
 							type="button"
-							onClick={() => answer(approval.id, true)}
+							onClick={() => answer(approval, true)}
 							disabled={answering}
 							className="rounded-md bg-red-600 px-3 py-1.5 text-white disabled:opacity-50">
 							Approve
 						</button>
 						<button
 							type="button"
-							onClick={() => answer(approval.id, false)}
+							onClick={() => answer(approval, false)}
 							disabled={answering}
 							className="rounded-md border border-amber-400 px-3 py-1.5 disabled:opacity-50 dark:border-amber-700">
 							Deny

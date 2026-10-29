@@ -1,83 +1,109 @@
 # Agent server (Python)
 
-A LangGraph agent that uses Gemini and three tools, served by FastAPI. The
+A LangGraph agent that uses Gemini and four tools, served by FastAPI. The
 Next.js app's `/agent-tanstack` page talks to it with TanStack's `useChat`.
 
 ## Run it
 
-You need the Next.js app's `.env` (it has `GEMINI_API_KEY` and `DATABASE_URL`)
-and Postgres running (`docker compose up -d` in the project root).
+You need the Next.js app's `.env` (it has `GEMINI_API_KEY` and `DATABASE_URL`),
+Postgres running (`docker compose up -d`) and the tables (`npm run migrate`),
+both in the project root. Then start two processes:
 
 ```bash
 cd agent-server
 uv sync              # install the Python packages (first time only)
-uv run main.py       # agent on http://127.0.0.1:8123
+uv run main.py       # the API on http://127.0.0.1:8123 (queues runs, streams them)
+uv run worker.py     # a worker (runs the agent); start more for more capacity
 ```
 
-Then, in the project root, `npm run dev`, sign in and open **Agent (TanStack)**
-in the top menu.
+Then, in the project root, `npm run dev`, sign in and open **Agent (TanStack)**.
 
 ## The files
 
 | File | What it does |
 |---|---|
-| `tools.py` | Three plain Python functions the model can call: the current time, the weather (Open-Meteo, no key needed) and a safe calculator. |
-| `agent.py` | The agent, built with LangGraph like its quickstart: ask Gemini, run any tools it asked for, loop until it answers. |
-| `main.py` | FastAPI. Connects to Postgres, builds the agent, and exposes it at `POST /agent`, plus `GET /agent?threadId=` for the saved chat. |
-| `history.py` | Turns a saved LangGraph thread into the `{ id, role, parts }` messages TanStack's `useChat` shows after a reload. |
-| `runs.py` | Replies that survive a refresh: runs the agent in the background and saves a numbered log of its events in Postgres, so a reloaded page can rejoin. |
-
-## Refreshing in the middle of a reply (`runs.py`)
-
-Written by hand to follow the protocol TanStack's `useChat` speaks:
-
-| Moment | What the browser sends | What `main.py` does |
-|---|---|---|
-| Send | `POST /agent` | Starts the agent in a background task and streams its log, each event tagged `id: 1`, `id: 2`, ... |
-| Connection drops | The same POST again, with `Last-Event-ID: <last id>` | Does **not** run the agent again; continues the log after that id |
-| Page reload | `GET /agent?threadId=` | Returns the history **and** `activeRun: { runId }` while a reply is running |
-| Rejoin | `GET /agent?runId=...&offset=-1` | Replays the log from the start, then streams the rest live |
-
-The agent no longer runs inside the HTTP response, so closing the tab does not
-stop it; the reply finishes and is saved either way. `ag-ui-langgraph`'s own
-`add_langgraph_fastapi_endpoint` is no longer used, because it runs the agent
-inside the response.
-
-**Where the log lives:** Postgres, in two tables from
-`db/migrations/0003_agent_run_log.sql` (applied with `npm run migrate`):
-
-| Table | Holds |
-|---|---|
-| `agent_runs` | One row per reply: `status` (`running` / `finished`), `cancel_requested`, `heartbeat_at` |
-| `agent_run_events` | Every event of a reply, numbered (`seq`), exactly as sent to the browser |
-
-So any server can serve a rejoin, and a restart keeps what was written:
-
-- **Stop** (`POST /agent/stop`) sets `cancel_requested`. The server running
-  that reply checks it with its heartbeat every 2 s and cancels the run.
-- **Server crash or restart mid-reply:** the reply cannot continue (the agent
-  was running inside that server), but its events are saved. A run whose
-  heartbeat is silent for 30 s is closed with "The server restarted before the
-  reply finished.", so a reloaded page shows the partial reply instead of
-  waiting forever.
-- **Limits:** a run may take 120 s (`AGENT_RUN_TIMEOUT_SECONDS`), each Gemini
-  call 60 s with 2 retries, and 12 graph steps. Finished logs are deleted after
-  an hour; the conversation itself stays in the checkpointer.
-- Readers on the same server are woken as soon as an event is saved; readers on
-  another server check for new events every 0.5 s.
+| `tools.py` | The tools: current time, weather (Open-Meteo), a safe calculator, and `delete_chat_history`, which needs the user's approval. |
+| `agent.py` | The agent, built with LangGraph like its quickstart: ask Gemini, run the tools it asked for (pausing for approval when needed), loop until it answers. |
+| `main.py` | The API. Never runs the agent: queues runs, streams their logs, returns history, stops and clears chats. |
+| `worker.py` | The worker. Claims queued runs from Postgres and runs the agent for them. |
+| `runs.py` | The job queue and reply log shared by both: Postgres tables, heartbeats, retries. |
+| `history.py` | Turns a saved LangGraph thread into the `{ id, role, parts }` messages TanStack's `useChat` shows after a reload, reasoning included. |
 
 ## How one message travels
 
 ```
-Browser ──> FastAPI POST /agent ──> LangGraph agent ──> Gemini
-  (TanStack page,  (streams AG-UI events back)   └──> tools
-   no Next.js route)
+Browser ──POST /agent──> API ──queues──> agent_runs (Postgres) <──claims── Worker ──> LangGraph ──> Gemini + tools
+   ^                      │                                                  │
+   └──── streams the ─────┘ <──────── agent_run_events (Postgres) <─ saves ──┘
+         saved events
 ```
 
 **AG-UI** is the shared language: a standard list of streamed events ("run
-started", "a piece of text", "tool called", "run finished"). `ag-ui-langgraph`
-turns LangGraph's output into those events, and TanStack's `useChat` reads
-them. Any other AG-UI client could use the same server.
+started", "a piece of text", "tool called", "reasoning", "run finished").
+`ag-ui-langgraph` turns LangGraph's output into those events, and TanStack's
+`useChat` reads them.
+
+## Replies as jobs (`runs.py`, `worker.py`)
+
+The API only queues a run; a worker runs it and saves every event in Postgres,
+numbered 1, 2, 3... The browser reads that log, following TanStack's protocol:
+
+| Moment | What the browser sends | What the API does |
+|---|---|---|
+| Send | `POST /agent` | Queues the run and streams its log, each event tagged `id: 1`, `id: 2`, ... |
+| Connection drops | The same POST again, with `Last-Event-ID: <last id>` | Continues the log after that id; nothing runs twice |
+| Page reload | `GET /agent?threadId=` | Returns the history, `activeRun` while a reply is running, and any pending approval |
+| Rejoin | `GET /agent?runId=...&offset=-1` | Replays the log from the start, then streams the rest live |
+
+The tables, from `db/migrations/0003` and `0004` (applied with `npm run migrate`):
+
+| Table | Holds |
+|---|---|
+| `agent_runs` | One row per reply: `status` (`queued` / `running` / `finished`), the request (`input`), `attempts`, `cancel_requested`, `heartbeat_at` |
+| `agent_run_events` | Every event of a reply, numbered (`seq`), exactly as sent to the browser |
+
+- **Workers** claim runs with `FOR UPDATE SKIP LOCKED`, so any number can poll
+  at once without two taking the same run. Each runs up to 4 replies at once
+  (`WORKER_CONCURRENCY`).
+- **Worker crash:** a running reply refreshes its heartbeat every 2 s. When it
+  has been silent for 30 s, a worker claims the run again and continues it
+  from the last step LangGraph saved. The page keeps the cut-off part and then
+  receives the retried reply. After 3 attempts the run is closed with an error.
+  Stopping a worker with Ctrl+C hands its replies back the same way.
+- **Stop** (`POST /agent/stop`) sets `cancel_requested`; a queued run is closed
+  at once, a running one by its worker on its next heartbeat.
+- **Limits:** a run may take 30 minutes (`AGENT_RUN_TIMEOUT_SECONDS`), each
+  Gemini call 60 s with 2 retries, and 12 graph steps. Finished logs are
+  deleted after an hour; the conversation itself stays in the checkpointer.
+
+## Approvals (`interrupt()`)
+
+`delete_chat_history` is listed in `NEEDS_APPROVAL` (`tools.py`). Before running
+it, `run_tools` calls LangGraph's `interrupt()`:
+
+1. The run pauses and ends with `RUN_FINISHED` outcome `interrupt`, carrying the
+   question ("Delete this whole conversation?").
+2. The page shows Approve / Deny. TanStack lists interrupts from a non-TanStack
+   server as `unbound` (shown, but without its own `resolveInterrupt`), so the
+   page answers with `useChat`'s `resumeInterruptsUnsafe`: it sends the AG-UI
+   `resume` field and streams the continued reply into the same chat.
+3. LangGraph re-runs the node and `interrupt()` returns `{ approved }`. Deny:
+   the agent is told it was cancelled. Approve: the thread is deleted once the
+   reply ends, and the page clears the screen.
+
+A pending approval is saved by the checkpointer, so after a reload
+`GET /agent?threadId=` returns it and the buttons come back.
+
+## Reasoning
+
+`include_thoughts=True` (`agent.py`) makes Gemini return summaries of its
+reasoning. The adapter streams them as `REASONING_*` events, TanStack shows them
+as `thinking` parts, and the checkpointer saves them as `{"type": "thinking"}`
+blocks that `history.py` turns back into `thinking` parts after a reload.
+
+The adapter ends every run with a `MESSAGES_SNAPSHOT` that leaves the reasoning
+out, and TanStack replaces its messages with it, so the worker drops that one
+event. The streamed ids match the snapshot's, so nothing else changes.
 
 ## The agent, step by step (`agent.py`)
 
@@ -87,47 +113,31 @@ START -> call_model -> (asked for tools?) -> run_tools -> back to call_model
 ```
 
 1. `call_model` sends the conversation to Gemini, with the tools it may use.
-2. If Gemini replies "call `get_weather` with city=Lahore", `should_continue`
-   routes to `run_tools`, which runs it and adds the result to the conversation.
-3. Back to `call_model`: Gemini reads the result and either asks for more
+2. If Gemini asks for tools, `run_tools` runs them (after approval where
+   needed) and adds the results to the conversation.
+3. Back to `call_model`: Gemini reads the results and either asks for more
    tools or writes the answer.
 
-## Where chats are saved
-
-| What | Where | Survives |
-|---|---|---|
-| The agent's memory of a conversation | Postgres, in LangGraph's own tables (`checkpoints`, `checkpoint_writes`, `checkpoint_blobs`, `checkpoint_migrations`), created by `checkpointer.setup()` | Everything: reloads and restarts |
-| The chat shown on the TanStack page | Loaded from the agent's Postgres memory (`GET /agent?threadId=`, `persistence: true`) | Everything: reloads and restarts |
-
+Tool results are saved with the id TanStack gives them (`tool-<call id>`), so
+when `useChat` sends the history back the ids match and nothing is saved twice.
 Each user has one thread, `tanstack:<user id>`.
-
-The TanStack page loads its chat from the agent on every page load (`history.py`).
-Tool results are saved with the id TanStack gives them (`tool-<call id>`, see
-`run_tools` in `agent.py`). When `useChat` sends the history back, the ids match
-and the adapter skips them instead of saving them twice.
-
-Separately, Next.js keeps a page you navigate away from alive in the background
-(`cacheComponents` uses React `<Activity>`), so going back through the menu shows
-the page exactly as you left it, even before any reload.
 
 ## Things to know before using this for real
 
-- **The Python server has no login.** It listens on `127.0.0.1` only, so only
-  your machine can reach it. Anyone who can reach it could read any thread by
-  guessing its id. The TanStack page calls Python directly from the
-  browser, with no Next.js route checking the login. Before deploying, add auth to FastAPI (check the
-  session or a token) and decide threads there.
+- **The Python server has no login.** It listens on `127.0.0.1` only. Anyone
+  who can reach it could read, run or delete any thread by guessing its id.
+  Before deploying, add auth to FastAPI and decide threads there.
+- **A retried run starts its model call again**, so a reply cut off by a crash
+  is written a second time (the page shows both). Approvals interrupted by a
+  crash are re-asked by the retried run.
 - **Gemini free tier is slow and limited.** Replies can take 10 to 20 seconds
   to start, and you can hit 429/503 errors.
-- **Windows:** `main.py` starts uvicorn on a `SelectorEventLoop`, because the
+- **Windows:** both processes run on a `SelectorEventLoop`, because the
   Postgres driver (psycopg) cannot run on Windows' default event loop.
-- `ag-ui-langgraph`'s README passes the graph straight to
-  `add_langgraph_fastapi_endpoint`; the code needs it wrapped in
-  `LangGraphAgent(name=..., graph=...)`. `main.py` no longer uses that helper
-  (see `runs.py`), but still runs the agent through `LangGraphAgent`.
 
 ## Sources
 
-- LangGraph: install, quickstart (Graph API), add memory (Postgres checkpointer) at docs.langchain.com
-- Gemini in LangChain: `langchain-google-genai` (reads `GOOGLE_API_KEY`, then `GEMINI_API_KEY`)
-- `ag-ui-langgraph` on PyPI and its source in `.venv`
+- LangGraph: install, quickstart (Graph API), add memory (Postgres checkpointer), `interrupt()` at docs.langchain.com
+- Gemini in LangChain: `langchain-google-genai` (`include_thoughts`; reads `GOOGLE_API_KEY`, then `GEMINI_API_KEY`)
+- `ag-ui-langgraph` and `ag-ui` (interrupts, `RunAgentInput.resume`) in `.venv`
+- TanStack AI: `useChat` interrupts, `resumeInterruptsUnsafe`, thinking parts, in `node_modules/@tanstack`
