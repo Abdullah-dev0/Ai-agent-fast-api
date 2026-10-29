@@ -5,12 +5,10 @@ give it the results, repeat until it answers in plain text. Approval before
 delete_chat_history comes from HumanInTheLoopMiddleware (docs: "Human-in-the-loop").
 """
 
-from ag_ui.core import EventType
 from ag_ui_langgraph import LangGraphAgent
 from langchain.agents import create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, wrap_tool_call
+from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.chat_models import init_chat_model
-from langchain.messages import ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from tools import TOOLS
@@ -37,28 +35,12 @@ SYSTEM_PROMPT = (
 )
 
 
-@wrap_tool_call
-async def tanstack_tool_ids(request, handler):
-    """Save each tool result with the id TanStack gives it ("tool-<call id>").
-
-    useChat sends the whole history back with every message, and the AG-UI
-    adapter adds any message whose id it has not saved yet. With matching ids,
-    tool results are not saved twice.
-    """
-    result = await handler(request)
-    if isinstance(result, ToolMessage):
-        result.id = f"tool-{request.tool_call['id']}"
-    return result
-
-
 def build_graph(checkpointer: BaseCheckpointSaver):
     return create_agent(
         model,
         TOOLS,
         system_prompt=SYSTEM_PROMPT,
         middleware=[
-            # First, so it also renames the "rejected" result the next one returns.
-            tanstack_tool_ids,
             # per_call: one interrupt per tool call, answered with a single
             # decision ({"type": "approve"} or {"type": "reject"}). The docs
             # recommend it for new agents.
@@ -78,35 +60,21 @@ def build_graph(checkpointer: BaseCheckpointSaver):
     )
 
 
-class ChatAgent(LangGraphAgent):
-    """The AG-UI adapter, minus the MESSAGES_SNAPSHOT it sends at the end of a run.
-
-    TanStack replaces its messages with that snapshot, and the snapshot leaves
-    out Gemini's reasoning, so every reasoning section on the page vanished when
-    a reply finished. Its ids match the streamed ones, so dropping it loses nothing.
-    """
-
-    async def run(self, input):
-        async for event in super().run(input):
-            if event.type != EventType.MESSAGES_SNAPSHOT:
-                yield event
-
-
 def build_agui_agent(graph) -> LangGraphAgent:
-    """Wrap the graph so it streams AG-UI events (what TanStack's useChat reads)."""
-    return ChatAgent(
+    """Wrap the graph so it streams AG-UI events (what the page's useAgentChat reads)."""
+    return LangGraphAgent(
         name="assistant",
         description="Gemini agent with tools",
         graph=graph,
         # RAW events copy LangGraph's internal events for debugging only and
-        # are most of the bytes on the wire; the chat UI does not need them.
+        # are most of the bytes on the wire; the page does not need them.
         emit_raw_events=False,
         # At most 12 graph steps per run (one tool round trip is 2), so a model
         # that keeps calling tools cannot loop forever. LangGraph's default is 25.
         config={"recursion_limit": 12},
         # When the agent pauses for approval, end the run with RUN_FINISHED
         # outcome "interrupt" and accept the answer in RunAgentInput.resume[]:
-        # the standard AG-UI way, which TanStack reads.
+        # the standard AG-UI way.
         emit_interrupt_outcome=True,
         enable_legacy_on_interrupt_event=False,
     )

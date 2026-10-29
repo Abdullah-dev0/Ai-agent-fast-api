@@ -1,12 +1,12 @@
 """FastAPI server that exposes the LangGraph agent over AG-UI.
 
-POST   /agent                 run the agent; streams AG-UI events (TanStack's useChat
-                              reads them). ag-ui-langgraph's own endpoint.
-GET    /agent?threadId=...    the saved chat (for useChat's `persistence: true`)
+POST   /agent                 run the agent; streams AG-UI events (the page's
+                              useAgentChat reads them). ag-ui-langgraph's own endpoint.
+GET    /agent?threadId=...    the saved chat and any approval still waiting
 DELETE /agent?threadId=...    clear that chat from the agent's memory
 GET    /agent/health          simple health check
 
-The reply runs inside the POST request: closing the page (or useChat's stop())
+The reply runs inside the POST request: closing the page (or the Stop button)
 stops it. Steps it already finished stay saved in the checkpointer.
 """
 
@@ -60,19 +60,12 @@ async def chat_history(threadId: str, request: Request):
     can read it. Fine on 127.0.0.1, not on a public server."""
     config = {"configurable": {"thread_id": threadId}}
     state = await request.app.state.graph.aget_state(config)
-    # Approvals still waiting for an answer, so a reloaded page shows them again.
     pending = [i for task in state.tasks for i in task.interrupts]
     return {
         "messages": to_ui_messages(state.values.get("messages", [])),
-        "interrupts": {
-            # useChat drops a restored approval without a run id. LangGraph saves
-            # no AG-UI run id, so this names the checkpoint the run paused at;
-            # the adapter resumes from the thread's latest checkpoint either way.
-            "runId": state.config["configurable"]["checkpoint_id"],
-            "pending": [lg_interrupt_to_agui(i).model_dump(by_alias=True, exclude_none=True) for i in pending],
-        }
-        if pending
-        else None,
+        # Approvals still waiting for an answer, so a reloaded page shows them
+        # again. Same AG-UI shape as the interrupts in a live RUN_FINISHED.
+        "interrupts": [lg_interrupt_to_agui(i).model_dump(by_alias=True, exclude_none=True) for i in pending],
     }
 
 
@@ -86,7 +79,7 @@ async def clear_chat(threadId: str, request: Request):
     return {"deleted": threadId}
 
 
-# The TanStack page calls this server straight from the browser (port 3000 -> 8123).
+# The chat page calls this server straight from the browser (port 3000 -> 8123).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],

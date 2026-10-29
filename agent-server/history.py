@@ -1,9 +1,16 @@
-"""Turn a LangGraph thread into the chat history TanStack's useChat expects.
+"""Turn a LangGraph thread into the chat the page shows after a reload.
 
-With `persistence: true`, useChat loads a thread on page load with
-GET <url>?threadId=... and expects { messages, interrupts }, where
-each message is { id, role, parts }. LangGraph already saved the thread
-(checkpointer); this file only changes its shape.
+The shape matches what the page's useAgentChat hook builds from the live
+stream, so a reloaded chat looks the same as a live one:
+
+    { id, role: "user" | "assistant", parts: [...] }
+
+One assistant entry per reply: the AI messages and tool results between two
+user messages are merged into it, in order. Parts:
+
+    { type: "text", id, text }
+    { type: "reasoning", id, text }
+    { type: "tool", id, name, args, result? }   (no result: not run yet)
 """
 
 import json
@@ -27,33 +34,27 @@ def thoughts_of(content) -> list[str]:
 
 
 def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
-    # A tool's result is its own message in LangGraph; in the UI it belongs on
+    # A tool's result is its own message in LangGraph; on the page it belongs on
     # the tool call that asked for it.
     results = {m.tool_call_id: text_of(m.content) for m in messages if isinstance(m, ToolMessage)}
-    ui = []
+    ui: list[dict] = []
     for m in messages:
-        # The same ids as LangGraph, so when useChat sends the history back the
-        # agent recognises these messages instead of adding them twice.
         if isinstance(m, HumanMessage):
-            ui.append({"id": m.id, "role": "user", "parts": [{"type": "text", "content": text_of(m.content)}]})
+            ui.append({"id": m.id, "role": "user", "parts": [{"type": "text", "id": m.id, "text": text_of(m.content)}]})
         elif isinstance(m, AIMessage):
-            # Reasoning first, as it streamed: TanStack's `thinking` parts.
-            parts = [{"type": "thinking", "content": thought} for thought in thoughts_of(m.content)]
+            if not ui or ui[-1]["role"] != "assistant":
+                ui.append({"id": m.id, "role": "assistant", "parts": []})
+            parts = ui[-1]["parts"]
+            # Reasoning first, as it streamed.
+            parts += [
+                {"type": "reasoning", "id": f"{m.id}-reasoning-{i}", "text": thought}
+                for i, thought in enumerate(thoughts_of(m.content))
+            ]
             for call in m.tool_calls:
-                part = {
-                    "type": "tool-call",
-                    "id": call["id"],
-                    "name": call["name"],
-                    "arguments": json.dumps(call["args"]),
-                    "state": "complete",
-                }
-                # No result yet (waiting for approval): leave `output` out, so the
-                # page shows "Waiting for approval" instead of "Used ... null".
+                part = {"type": "tool", "id": call["id"], "name": call["name"], "args": json.dumps(call["args"])}
                 if call["id"] in results:
-                    part["output"] = results[call["id"]]
+                    part["result"] = results[call["id"]]
                 parts.append(part)
             if text := text_of(m.content):
-                parts.append({"type": "text", "content": text})
-            if parts:
-                ui.append({"id": m.id, "role": "assistant", "parts": parts})
-    return ui
+                parts.append({"type": "text", "id": m.id, "text": text})
+    return [m for m in ui if m["parts"]]

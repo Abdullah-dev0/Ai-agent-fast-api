@@ -37,5 +37,5 @@ npm run dev                 # http://localhost:3000
 ## Python agent (agent-server/)
 
 A LangGraph agent with Gemini and tools, served by FastAPI, used by the
-`/agent-tanstack` page (TanStack useChat). See
+`/agent` page through our own `useAgentChat` hook. See
 [agent-server/README.md](agent-server/README.md) for how it works and how to run it.
