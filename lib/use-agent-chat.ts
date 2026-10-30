@@ -156,11 +156,12 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	const [error, setError] = useState<Error>();
 	const abortRef = useRef<AbortController | null>(null);
 
-	// Switching to another chat stops this one's reply, like closing the page does.
-	useEffect(() => () => abortRef.current?.abort(), []);
-
 	// The saved chat and any approval still waiting (GET /agent in main.py).
+	// Next hides a chat you switch away from instead of unmounting it, so its reply
+	// keeps streaming and this effect runs again when you come back. The saved copy
+	// is behind that reply: leave the screen alone while one is running.
 	useEffect(() => {
+		if (abortRef.current) return;
 		const controller = new AbortController();
 		fetch(`${url}?threadId=${encodeURIComponent(threadId)}`, { signal: controller.signal })
 			.then((res) => (res.ok ? res.json() : Promise.reject(new Error(`Could not load the chat (${res.status})`))))

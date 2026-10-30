@@ -50,7 +50,10 @@ streamed events ("run started", "a piece of text", "tool called", "reasoning",
 
 The reply runs inside the POST request. **Stop** (or closing the page) closes
 the connection, and that stops the reply. Steps it already finished stay saved,
-so a reload shows them. A reload during a reply does not rejoin it.
+so a reload shows them. A reload during a reply does not rejoin it. Switching to
+another chat does not stop the reply: Next keeps the last 3 pages alive but hidden.
+Past that, the page is dropped, the reply still finishes, and coming back while it
+runs shows only what is saved so far.
 
 ## The page's side (`lib/use-agent-chat.ts`)
 

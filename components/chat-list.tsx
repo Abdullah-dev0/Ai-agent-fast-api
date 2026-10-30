@@ -11,7 +11,7 @@ export function ChatList({ chats }: { chats: Chat[] }) {
 	const params = useParams<{ id?: string }>();
 	const current = params.id && decodeURIComponent(params.id);
 	return (
-		<nav className="flex shrink-0 gap-1 overflow-x-auto py-2 text-sm scrollbar-none xl:fixed xl:top-[calc(3.5rem+1px)] xl:bottom-0 xl:left-0 xl:w-64 xl:flex-col xl:overflow-y-auto xl:border-r xl:border-zinc-200 xl:p-3 dark:xl:border-zinc-800">
+		<nav className="flex shrink-0 gap-1 overflow-x-auto py-2 text-sm scrollbar-none xl:fixed xl:top-14.25 xl:bottom-0 xl:left-0 xl:w-64 xl:flex-col xl:overflow-y-auto xl:border-r xl:border-zinc-200 xl:p-3 dark:xl:border-zinc-800">
 			<form action={newChat} className="shrink-0">
 				<button
 					type="submit"
