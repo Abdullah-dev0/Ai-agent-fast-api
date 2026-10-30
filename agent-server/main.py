@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
         checkpointer = AsyncPostgresSaver(pool)
         await checkpointer.setup()  # creates LangGraph's tables once; safe to repeat
         app.state.checkpointer = checkpointer
-        app.state.graph = build_graph(checkpointer)
+        app.state.graph = build_graph(checkpointer, pool)
         # Registered here because the agent needs the checkpointer.
         add_langgraph_fastapi_endpoint(app, build_agui_agent(app.state.graph), "/agent")
         yield

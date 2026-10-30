@@ -15,7 +15,10 @@ export type Part =
 	// No `result`: the tool has not run (yet).
 	| { type: "tool"; id: string; name: string; args?: string; result?: string };
 
-export type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[] };
+// Tokens a reply used, over all its model calls. Missing if the provider reported none.
+export type Usage = { input: number; output: number };
+
+export type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[]; usage?: Usage };
 
 // How hard the model thinks before a reply: Gemini's levels (agent-server/agent.py).
 export const THINKING_LEVELS = ["minimal", "low", "medium", "high"] as const;
@@ -41,6 +44,9 @@ type Interrupt = {
 	};
 };
 
+// A run's token counts, one entry per provider and model.
+type RunUsage = { inputTokens?: number; outputTokens?: number };
+
 // The AG-UI events this hook uses; it ignores the others (steps, state).
 type AgUiEvent =
 	| { type: "TEXT_MESSAGE_CONTENT" | "REASONING_MESSAGE_CONTENT"; messageId: string; delta: string }
@@ -48,7 +54,11 @@ type AgUiEvent =
 	| { type: "TOOL_CALL_ARGS"; toolCallId: string; delta: string }
 	| { type: "TOOL_CALL_RESULT"; toolCallId: string; content: string }
 	| { type: "MESSAGES_SNAPSHOT"; messages: { toolCalls?: { id: string; function: { arguments: string } }[] }[] }
-	| { type: "RUN_FINISHED"; outcome?: { type: "success" } | { type: "interrupt"; interrupts: Interrupt[] } }
+	| {
+			type: "RUN_FINISHED";
+			outcome?: { type: "success" } | { type: "interrupt"; interrupts: Interrupt[] };
+			usage?: RunUsage[];
+	  }
 	| { type: "RUN_ERROR"; message: string };
 
 type ResumeEntry = { interruptId: string; status: "resolved"; payload: { type: "approve" | "reject" } };
@@ -59,6 +69,18 @@ function toApprovals(interrupts: Interrupt[]): Approval[] {
 		if (raw?.type !== "tool_approval") return [];
 		return [{ id: i.id, toolCallId: raw.tool_call_id, name: raw.name, args: raw.args, description: raw.description }];
 	});
+}
+
+// Adds a finished run's tokens to the reply. A run resumed after an approval
+// continues the same message, so its tokens add to the earlier ones.
+function addUsage(messages: ChatMessage[], runUsage: RunUsage[]): ChatMessage[] {
+	const last = messages.at(-1);
+	if (last?.role !== "assistant") return messages;
+	const usage = runUsage.reduce(
+		(sum, u) => ({ input: sum.input + (u.inputTokens ?? 0), output: sum.output + (u.outputTokens ?? 0) }),
+		last.usage ?? { input: 0, output: 0 },
+	);
+	return [...messages.slice(0, -1), { ...last, usage }];
 }
 
 // Reads a text/event-stream body: events are separated by a blank line, and
@@ -178,6 +200,8 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 				for await (const event of readEvents(res.body)) {
 					if (event.type === "RUN_FINISHED") {
 						if (event.outcome?.type === "interrupt") setApprovals(toApprovals(event.outcome.interrupts));
+						const runUsage = event.usage;
+						if (runUsage?.length) setMessages((ms) => addUsage(ms, runUsage));
 					} else if (event.type === "RUN_ERROR") {
 						setError(new Error(event.message));
 					} else {

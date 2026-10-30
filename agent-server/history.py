@@ -3,7 +3,7 @@
 The shape matches what the page's useAgentChat hook builds from the live
 stream, so a reloaded chat looks the same as a live one:
 
-    { id, role: "user" | "assistant", parts: [...] }
+    { id, role: "user" | "assistant", parts: [...], usage?: { input, output } }
 
 One assistant entry per reply: the AI messages and tool results between two
 user messages are merged into it, in order. Parts:
@@ -63,4 +63,10 @@ def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
                 parts.append(part)
             if text := text_of(m.content):
                 parts.append({"type": "text", "id": m.id, "text": text})
+            # One reply can be several model calls (a tool round trip): add them up,
+            # as the live RUN_FINISHED does. No usage reported: no "usage" key.
+            if m.usage_metadata:
+                usage = ui[-1].setdefault("usage", {"input": 0, "output": 0})
+                usage["input"] += m.usage_metadata.get("input_tokens", 0)
+                usage["output"] += m.usage_metadata.get("output_tokens", 0)
     return [m for m in ui if m["parts"]]

@@ -47,15 +47,10 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	// Follow the reply as it streams, but only while the user is at the bottom:
 	// scrolling up to read stops the following.
 	const atBottom = useRef(true);
+	const scroller = useRef<HTMLDivElement>(null);
 	useEffect(() => {
-		const onScroll = () => {
-			atBottom.current = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 120;
-		};
-		window.addEventListener("scroll", onScroll, { passive: true });
-		return () => window.removeEventListener("scroll", onScroll);
-	}, []);
-	useEffect(() => {
-		if (atBottom.current) window.scrollTo({ top: document.documentElement.scrollHeight });
+		const el = scroller.current;
+		if (el && atBottom.current) el.scrollTo({ top: el.scrollHeight });
 	}, [messages, thinking, approvals, loading]);
 
 	function decide(approved: boolean) {
@@ -103,11 +98,11 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		/>
 	);
 
-	if (loading) return <p className="animate-pulse text-sm text-zinc-500">Loading chat…</p>;
+	if (loading) return <p className="animate-pulse pt-10 text-sm text-zinc-500">Loading chat…</p>;
 
 	if (messages.length === 0 && !running)
 		return (
-			<div className="flex min-h-[60vh] flex-col items-center justify-center gap-8">
+			<div className="flex flex-1 flex-col items-center justify-center gap-8">
 				<h2 className="text-3xl font-semibold tracking-tight">What can I help with?</h2>
 				<div className="w-full">{composer}</div>
 				{error && <p className="text-sm text-red-600">{error.message}</p>}
@@ -116,8 +111,8 @@ export function AgentChat({ threadId }: { threadId: string }) {
 
 	const last = messages.at(-1);
 	return (
-		<div className="flex flex-col">
-			<div className="flex justify-end">
+		<div className="flex min-h-0 flex-1 flex-col">
+			<div className="flex justify-end pt-3">
 				<button
 					type="button"
 					onClick={clearChat}
@@ -129,7 +124,14 @@ export function AgentChat({ threadId }: { threadId: string }) {
 				</button>
 			</div>
 
-			<div className="flex flex-col gap-8 pt-4 pb-8">
+			{/* Only the messages scroll, with no visible scrollbar. */}
+			<div
+				ref={scroller}
+				onScroll={(e) => {
+					const el = e.currentTarget;
+					atBottom.current = el.clientHeight + el.scrollTop >= el.scrollHeight - 120;
+				}}
+				className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto pt-4 pb-8 [scrollbar-width:none] [&>*]:shrink-0">
 				{messages.map((message) =>
 					message.role === "user" ? (
 						<div
@@ -142,6 +144,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 							key={message.id}
 							message={message}
 							streaming={running && message === last}
+							latest={message === last}
 							waiting={approvals.map((a) => a.toolCallId)}
 						/>
 					),
@@ -177,7 +180,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 				{error && <p className="text-sm text-red-600">{error.message}</p>}
 			</div>
 
-			<div className="sticky bottom-0 bg-background pb-3">
+			<div className="pb-3">
 				{composer}
 				<p className="pt-2 text-center text-xs text-zinc-500">The agent can make mistakes. Check important info.</p>
 			</div>
@@ -288,16 +291,18 @@ function Composer({
 function AssistantMessage({
 	message,
 	streaming,
+	latest,
 	waiting,
 }: {
 	message: ChatMessage;
 	streaming: boolean;
+	latest: boolean;
 	waiting: string[];
 }) {
 	const text = message.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n");
 	const lastPart = message.parts.at(-1);
 	return (
-		<div className="flex flex-col gap-3 leading-7">
+		<div className="group/reply flex flex-col gap-3 leading-7">
 			{message.parts.map((part) => {
 				if (part.type === "text")
 					return (
@@ -309,7 +314,25 @@ function AssistantMessage({
 					return <Reasoning key={part.id} part={part} active={streaming && part === lastPart} />;
 				return <ToolCall key={part.id} part={part} waiting={waiting.includes(part.id)} running={streaming} />;
 			})}
-			{text && !streaming && <CopyButton text={text} />}
+			{!streaming && (text || message.usage) && (
+				// Like ChatGPT: older replies show this row on hover. Touch screens,
+				// which cannot hover, always show it.
+				<div
+					className={`flex min-h-8 items-center gap-2 transition-opacity focus-within:opacity-100 ${
+						latest ? "" : "[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/reply:opacity-100"
+					}`}>
+					{text && (
+						<div className="-ml-2">
+							<CopyButton text={text} />
+						</div>
+					)}
+					{message.usage && (
+						<span title="Tokens used for this reply" className="text-xs text-zinc-500">
+							{message.usage.input.toLocaleString()} input · {message.usage.output.toLocaleString()} output tokens
+						</span>
+					)}
+				</div>
+			)}
 		</div>
 	);
 }

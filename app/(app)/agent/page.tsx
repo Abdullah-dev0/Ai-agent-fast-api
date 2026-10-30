@@ -13,8 +13,12 @@ async function UserAgent() {
 // useAgentChat hook (lib/use-agent-chat.ts).
 export default function AgentPage() {
 	return (
-		<Suspense fallback={<p className="animate-pulse text-sm text-zinc-500">Loading chat…</p>}>
-			<UserAgent />
-		</Suspense>
+		// Exactly fills the screen under the header (h-14 plus its 1px border) so the
+		// page never scrolls. -my-10 cancels the py-10 from the layout's <main>.
+		<div className="-my-10 flex h-[calc(100dvh-3.5rem-1px)] flex-col">
+			<Suspense fallback={<p className="animate-pulse pt-10 text-sm text-zinc-500">Loading chat…</p>}>
+				<UserAgent />
+			</Suspense>
+		</div>
 	);
 }

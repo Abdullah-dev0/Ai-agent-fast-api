@@ -5,6 +5,7 @@ give it the results, repeat until it answers in plain text. Approval before
 delete_chat_history comes from HumanInTheLoopMiddleware (docs: "Human-in-the-loop").
 """
 
+import logging
 import os
 from datetime import datetime, timezone
 from typing import NotRequired
@@ -13,12 +14,19 @@ from ag_ui_langgraph import LangGraphAgent
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, ModelRequest, dynamic_prompt, wrap_model_call
 from langchain.chat_models import init_chat_model
+from langchain.messages import AIMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.config import get_config
+from psycopg_pool import AsyncConnectionPool
 
 from tools import TOOLS
 
+logger = logging.getLogger(__name__)
+
 # USE_OPENROUTER=true in .env uses OpenRouter's OPENROUTER_MODEL; otherwise Gemini.
 USE_OPENROUTER = os.environ.get("USE_OPENROUTER", "").strip().lower() == "true"
+PROVIDER = "openrouter" if USE_OPENROUTER else "google_genai"
+MODEL_NAME = os.environ.get("OPENROUTER_MODEL", "openrouter/free") if USE_OPENROUTER else "gemini-3.5-flash"
 
 # The Gemini integration reads GOOGLE_API_KEY, then falls back to GEMINI_API_KEY,
 # so this uses the same key as the Next.js app. OpenRouter reads OPENROUTER_API_KEY.
@@ -33,12 +41,12 @@ USE_OPENROUTER = os.environ.get("USE_OPENROUTER", "").strip().lower() == "true"
 # thinking level below turns its reasoning on.
 if USE_OPENROUTER:
     model = init_chat_model(
-        f"openrouter:{os.environ.get('OPENROUTER_MODEL', 'openrouter/free')}",
+        f"openrouter:{MODEL_NAME}",
         timeout=60_000,
         max_retries=2,
     )
 else:
-    model = init_chat_model("google_genai:gemini-3.5-flash", timeout=60, max_retries=2, include_thoughts=True)
+    model = init_chat_model(f"google_genai:{MODEL_NAME}", timeout=60, max_retries=2, include_thoughts=True)
 
 # The name the assistant uses for itself. Change it here.
 ASSISTANT_NAME = "Aragon"
@@ -100,7 +108,43 @@ async def use_thinking_level(request: ModelRequest, handler):
     return await handler(request)
 
 
-def build_graph(checkpointer: BaseCheckpointSaver):
+def usage_recorder(pool: AsyncConnectionPool):
+    @wrap_model_call
+    async def record_usage(request: ModelRequest, handler):
+        """Saves one token_usage row per finished model call. A stopped call reports
+        no usage, so it gets no row. A failed save is logged and the reply goes on."""
+        response = await handler(request)
+        message = next((m for m in response.result if isinstance(m, AIMessage)), None)
+        if message is None or not message.usage_metadata:
+            return response
+        try:
+            thread_id = get_config()["configurable"]["thread_id"]
+            async with pool.connection() as db:
+                await db.execute(
+                    """INSERT INTO token_usage
+                       (user_id, thread_id, message_id, provider, model, input_tokens, output_tokens)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        # The page's thread id is tanstack:<user id> (app/(app)/agent/page.tsx).
+                        # The browser sends it unchecked: see the caveat in main.py.
+                        thread_id.removeprefix("tanstack:"),
+                        thread_id,
+                        message.id,
+                        PROVIDER,
+                        # The model that really answered, which openrouter/free picks per call.
+                        message.response_metadata.get("model_name") or MODEL_NAME,
+                        message.usage_metadata.get("input_tokens", 0),
+                        message.usage_metadata.get("output_tokens", 0),
+                    ),
+                )
+        except Exception:
+            logger.exception("Could not save token usage")
+        return response
+
+    return record_usage
+
+
+def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
     return create_agent(
         model,
         TOOLS,
@@ -108,6 +152,7 @@ def build_graph(checkpointer: BaseCheckpointSaver):
         middleware=[
             system_prompt_with_date,
             use_thinking_level,
+            usage_recorder(pool),
             # per_call: one interrupt per tool call, answered with a single
             # decision ({"type": "approve"} or {"type": "reject"}). The docs
             # recommend it for new agents.
