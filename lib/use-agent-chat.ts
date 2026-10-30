@@ -17,6 +17,10 @@ export type Part =
 
 export type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[] };
 
+// How hard the model thinks before a reply: Gemini's levels (agent-server/agent.py).
+export const THINKING_LEVELS = ["minimal", "low", "medium", "high"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
 // A tool waiting for the user's OK (HumanInTheLoopMiddleware in agent.py).
 export type Approval = {
 	id: string;
@@ -144,7 +148,11 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 
 	// One run: POST an AG-UI RunAgentInput and apply the events it streams back.
 	const run = useCallback(
-		async (input: { messages: { id: string; role: "user"; content: string }[]; resume?: ResumeEntry[] }) => {
+		async (input: {
+			messages: { id: string; role: "user"; content: string }[];
+			resume?: ResumeEntry[];
+			state?: { thinking_level: ThinkingLevel };
+		}) => {
 			const controller = new AbortController();
 			abortRef.current = controller;
 			setRunning(true);
@@ -205,10 +213,10 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	);
 
 	const send = useCallback(
-		(text: string) => {
+		(text: string, thinkingLevel: ThinkingLevel) => {
 			const id = crypto.randomUUID();
 			setMessages((ms) => [...ms, { id, role: "user", parts: [{ type: "text", id, text }] }]);
-			return run({ messages: [{ id, role: "user", content: text }] });
+			return run({ messages: [{ id, role: "user", content: text }], state: { thinking_level: thinkingLevel } });
 		},
 		[run],
 	);

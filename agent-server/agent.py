@@ -1,22 +1,27 @@
 """The agent itself, built with LangChain's create_agent (docs: "Agents").
 
-create_agent runs the usual tool loop: ask Gemini, run the tools it asked for,
+create_agent runs the usual tool loop: ask the model, run the tools it asked for,
 give it the results, repeat until it answers in plain text. Approval before
 delete_chat_history comes from HumanInTheLoopMiddleware (docs: "Human-in-the-loop").
 """
 
+import os
 from datetime import datetime, timezone
+from typing import NotRequired
 
 from ag_ui_langgraph import LangGraphAgent
-from langchain.agents import create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, ModelRequest, dynamic_prompt
+from langchain.agents import AgentState, create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware, ModelRequest, dynamic_prompt, wrap_model_call
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from tools import TOOLS
 
+# USE_OPENROUTER=true in .env uses OpenRouter's OPENROUTER_MODEL; otherwise Gemini.
+USE_OPENROUTER = os.environ.get("USE_OPENROUTER", "").strip().lower() == "true"
+
 # The Gemini integration reads GOOGLE_API_KEY, then falls back to GEMINI_API_KEY,
-# so this uses the same key as the Next.js app.
+# so this uses the same key as the Next.js app. OpenRouter reads OPENROUTER_API_KEY.
 # The full Flash model, not -lite: the lite one tended to keep obeying an old
 # instruction ("one word per line") long after the user moved on.
 # timeout: give up on one Gemini call after 60 s instead of waiting forever.
@@ -24,7 +29,16 @@ from tools import TOOLS
 # include_thoughts: Gemini also returns summaries of its reasoning. The AG-UI
 # adapter streams them as REASONING events and the checkpointer saves them with
 # the message, so the page can show them live and after a reload.
-model = init_chat_model("google_genai:gemini-3.5-flash", timeout=60, max_retries=2, include_thoughts=True)
+# OpenRouter's timeout is in milliseconds, and it has no include_thoughts: the
+# thinking level below turns its reasoning on.
+if USE_OPENROUTER:
+    model = init_chat_model(
+        f"openrouter:{os.environ.get('OPENROUTER_MODEL', 'openrouter/free')}",
+        timeout=60_000,
+        max_retries=2,
+    )
+else:
+    model = init_chat_model("google_genai:gemini-3.5-flash", timeout=60, max_retries=2, include_thoughts=True)
 
 # The name the assistant uses for itself. Change it here.
 ASSISTANT_NAME = "Aragon"
@@ -65,12 +79,35 @@ def system_prompt_with_date(request: ModelRequest) -> str:
     )
 
 
+# The thinking levels, the same list as THINKING_LEVELS in use-agent-chat.ts.
+# Gemini's own levels; OpenRouter accepts them as reasoning efforts.
+THINKING_LEVELS = {"minimal", "low", "medium", "high"}
+
+
+class ChatState(AgentState):
+    # The level picked on the page, sent in RunAgentInput.state. It is saved with
+    # the thread, so a run resumed after an approval keeps it.
+    thinking_level: NotRequired[str]
+
+
+@wrap_model_call
+async def use_thinking_level(request: ModelRequest, handler):
+    """Calls the model at the picked level. Anything else keeps the model's default."""
+    level = request.state.get("thinking_level")
+    if level in THINKING_LEVELS:
+        setting = {"reasoning": {"effort": level}} if USE_OPENROUTER else {"thinking_level": level}
+        request = request.override(model_settings={**request.model_settings, **setting})
+    return await handler(request)
+
+
 def build_graph(checkpointer: BaseCheckpointSaver):
     return create_agent(
         model,
         TOOLS,
+        state_schema=ChatState,
         middleware=[
             system_prompt_with_date,
+            use_thinking_level,
             # per_call: one interrupt per tool call, answered with a single
             # decision ({"type": "approve"} or {"type": "reject"}). The docs
             # recommend it for new agents.
@@ -94,7 +131,7 @@ def build_agui_agent(graph) -> LangGraphAgent:
     """Wrap the graph so it streams AG-UI events (what the page's useAgentChat reads)."""
     return LangGraphAgent(
         name="assistant",
-        description="Gemini agent with tools",
+        description="Chat agent with tools",
         graph=graph,
         # RAW events copy LangGraph's internal events for debugging only and
         # are most of the bytes on the wire; the page does not need them.

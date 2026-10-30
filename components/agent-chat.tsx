@@ -3,9 +3,21 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useAgentChat, type ChatMessage, type Part } from "@/lib/use-agent-chat";
+import { THINKING_LEVELS, useAgentChat, type ChatMessage, type Part, type ThinkingLevel } from "@/lib/use-agent-chat";
 
 const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL ?? "http://127.0.0.1:8123/agent";
+const THINKING_KEY = "agent-chat-thinking";
+
+// The level picked last time. The server has no localStorage and gets the default,
+// which is safe: the selector only renders after the chat has loaded in the browser.
+function savedThinking(): ThinkingLevel {
+	try {
+		const saved = localStorage.getItem(THINKING_KEY);
+		return THINKING_LEVELS.find((level) => level === saved) ?? "medium";
+	} catch {
+		return "medium";
+	}
+}
 
 // Markdown styles, applied to the rendered elements inside one wrapper.
 const MARKDOWN =
@@ -24,6 +36,7 @@ const MARKDOWN =
 // (streaming, approvals, history, stop) is in useAgentChat.
 export function AgentChat({ threadId }: { threadId: string }) {
 	const [input, setInput] = useState("");
+	const [thinkingLevel, setThinkingLevel] = useState(savedThinking);
 	const [clearing, startClear] = useTransition();
 	const [answering, startAnswer] = useTransition();
 	const { messages, approvals, loading, running, thinking, error, send, answer, stop, clear } = useAgentChat({
@@ -51,7 +64,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 			await answer(approved);
 			// The tool only says "approved"; the thread is deleted now that the
 			// reply has ended, so the agent was not still writing to it.
-			if (approved && deleting) await clear();
+			if (approved && deleting) setTimeout(() => clear(), 1000);
 		});
 	}
 
@@ -59,8 +72,17 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		const text = input.trim();
 		if (!text || running || loading || approvals.length > 0) return;
 		atBottom.current = true;
-		void send(text);
+		void send(text, thinkingLevel);
 		setInput("");
+	}
+
+	function chooseThinking(level: ThinkingLevel) {
+		setThinkingLevel(level);
+		try {
+			localStorage.setItem(THINKING_KEY, level);
+		} catch {
+			// Blocked storage: the pick still applies until the page is reloaded.
+		}
 	}
 
 	function clearChat() {
@@ -74,6 +96,8 @@ export function AgentChat({ threadId }: { threadId: string }) {
 			onChange={setInput}
 			onSubmit={submit}
 			onStop={stop}
+			thinkingLevel={thinkingLevel}
+			onThinkingLevelChange={chooseThinking}
 			running={running}
 			disabled={loading || approvals.length > 0}
 		/>
@@ -183,6 +207,8 @@ function Composer({
 	onChange,
 	onSubmit,
 	onStop,
+	thinkingLevel,
+	onThinkingLevelChange,
 	running,
 	disabled,
 }: {
@@ -190,6 +216,8 @@ function Composer({
 	onChange: (value: string) => void;
 	onSubmit: () => void;
 	onStop: () => void;
+	thinkingLevel: ThinkingLevel;
+	onThinkingLevelChange: (level: ThinkingLevel) => void;
 	running: boolean;
 	disabled: boolean;
 }) {
@@ -224,6 +252,17 @@ function Composer({
 				placeholder={disabled && !running ? "Answer the question above first" : "Ask anything"}
 				className="max-h-52 flex-1 resize-none bg-transparent px-3 py-2 outline-none placeholder:text-zinc-500"
 			/>
+			<select
+				aria-label="Thinking level"
+				value={thinkingLevel}
+				onChange={(e) => onThinkingLevelChange(e.target.value as ThinkingLevel)}
+				className="h-9 shrink-0 cursor-pointer rounded-full bg-transparent px-2 text-sm text-zinc-500 outline-none hover:text-zinc-900 dark:bg-zinc-900 dark:hover:text-zinc-100">
+				{THINKING_LEVELS.map((level) => (
+					<option key={level} value={level}>
+						Thinking: {level}
+					</option>
+				))}
+			</select>
 			{running ? (
 				<button
 					type="button"
@@ -255,9 +294,7 @@ function AssistantMessage({
 	streaming: boolean;
 	waiting: string[];
 }) {
-	const text = message.parts
-		.flatMap((p) => (p.type === "text" ? [p.text] : []))
-		.join("\n\n");
+	const text = message.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n");
 	const lastPart = message.parts.at(-1);
 	return (
 		<div className="flex flex-col gap-3 leading-7">
@@ -285,8 +322,7 @@ function Reasoning({ part, active }: { part: Extract<Part, { type: "reasoning" }
 				<span className={active ? "animate-pulse" : undefined}>{active ? "Thinking" : "Thought"}</span>
 				<ChevronIcon />
 			</summary>
-			<div
-				className={`mt-2 border-l-2 border-zinc-200 pl-4 text-sm text-zinc-500 dark:border-zinc-700 ${MARKDOWN}`}>
+			<div className={`mt-2 border-l-2 border-zinc-200 pl-4 text-sm text-zinc-500 dark:border-zinc-700 ${MARKDOWN}`}>
 				<MarkdownText text={part.text} />
 			</div>
 		</details>
