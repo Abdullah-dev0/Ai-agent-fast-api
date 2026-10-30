@@ -286,6 +286,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	// first (the middleware pauses before any tool runs), so none is left unanswered.
 	const finishBrowserCall = useCallback(
 		(id: string, result: BrowserToolResult) => {
+			if (callResults.current.has(id)) return; // answered already: never resume twice
 			callResults.current.set(id, result);
 			const resume = browserCalls.flatMap((c): ResumeEntry[] => {
 				const payload = callResults.current.get(c.id);

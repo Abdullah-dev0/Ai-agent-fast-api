@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { FolderPicker, WriteReview } from "@/components/folder-cards";
 import { deleteChat, touchChat } from "@/lib/actions";
 import { needsUser, openCsv, type BrowserToolResult } from "@/lib/browser-tools";
 import type { CsvResult } from "@/lib/csv";
@@ -77,7 +78,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	useEffect(() => {
 		const el = scroller.current;
 		if (el && atBottom.current) el.scrollTo({ top: el.scrollHeight });
-	}, [messages, thinking, approvals, loading]);
+	}, [messages, thinking, approvals, browserCalls, loading]);
 
 	// The thread first: if that fails, the chat stays in the list.
 	async function removeChat() {
@@ -213,9 +214,13 @@ export function AgentChat({ threadId }: { threadId: string }) {
 
 				{browserCalls
 					.filter((call) => needsUser(call.name))
-					.map((call) => (
-						<CsvPicker key={call.id} threadId={threadId} onDone={(result) => finishBrowserCall(call.id, result)} />
-					))}
+					.map((call) => {
+						const onDone = (result: BrowserToolResult) => finishBrowserCall(call.id, result);
+						if (call.name === "open_folder") return <FolderPicker key={call.id} threadId={threadId} onDone={onDone} />;
+						if (call.name === "write_file")
+							return <WriteReview key={call.id} threadId={threadId} args={call.args} onDone={onDone} />;
+						return <CsvPicker key={call.id} threadId={threadId} onDone={onDone} />;
+					})}
 
 				{error && <p className="text-sm text-red-600">{error.message}</p>}
 			</div>
@@ -485,7 +490,15 @@ function ToolCall({
 		return (
 			<details className="group" open={plain.results ? true : undefined}>
 				<summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 [&::-webkit-details-marker]:hidden">
-					{part.name === "get_location" ? <PinIcon /> : part.name === "get_weather" ? <CloudIcon /> : <TableIcon />}
+					{part.name === "get_location" ? (
+						<PinIcon />
+					) : part.name === "get_weather" ? (
+						<CloudIcon />
+					) : part.name.endsWith("_csv") ? (
+						<TableIcon />
+					) : (
+						<FolderIcon />
+					)}
 					<span className={plain.active ? "animate-pulse" : undefined}>{plain.label}</span>
 					{hasMore && <ChevronIcon />}
 				</summary>
@@ -579,6 +592,41 @@ function plainToolView(
 	part: Extract<Part, { type: "tool" }>,
 	running: boolean,
 ): { label: string; detail?: string; active?: boolean; results?: CsvResult } | null {
+	if (part.name === "open_folder") {
+		if (part.result === undefined)
+			return running ? { label: "Waiting for a folder", active: true } : { label: "No folder opened" };
+		const opened = parseJson<{ folder?: string; files?: unknown[]; hidden?: number; error?: string }>(part.result);
+		if (!opened || opened.error) return { label: "No folder opened", detail: opened?.error };
+		return {
+			label: `Opened ${opened.folder} · ${opened.files?.length} files`,
+			detail: opened.hidden ? `${opened.hidden} hidden: secrets and generated folders` : undefined,
+		};
+	}
+	if (part.name === "read_files") {
+		const { paths } = parseJson<{ paths?: string[] }>(part.args) ?? {};
+		const count = paths?.length ?? 0;
+		const files = count === 1 ? "1 file" : `${count} files`;
+		if (part.result === undefined)
+			return running ? { label: `Reading ${files}`, active: true } : { label: `Did not read ${files}` };
+		const read = parseJson<{ files?: { path: string; error?: string }[]; error?: string }>(part.result);
+		if (!read?.files) return { label: `Could not read ${files}`, detail: read?.error };
+		const worked = read.files.filter((f) => !f.error).length;
+		return {
+			label: worked === 0 ? `Could not read ${files}` : `Read ${worked === 1 ? "1 file" : `${worked} files`}`,
+			detail: read.files.map((f) => (f.error ? `${f.path} (${f.error})` : f.path)).join(", "),
+		};
+	}
+	if (part.name === "write_file") {
+		const { path } = parseJson<{ path?: string }>(part.args) ?? {};
+		if (part.result === undefined)
+			return running ? { label: `Waiting for your review of ${path}`, active: true } : { label: `Did not change ${path}` };
+		const written = parseJson<{ created?: boolean; backup?: string | null; error?: string }>(part.result);
+		if (!written || written.error) return { label: `Did not change ${path}`, detail: written?.error };
+		return {
+			label: `${written.created ? "Created" : "Changed"} ${path}`,
+			detail: written.backup ? `Old version saved at ${written.backup}` : undefined,
+		};
+	}
 	if (part.name === "open_csv") {
 		if (part.result === undefined)
 			return running ? { label: "Waiting for a file", active: true } : { label: "No file opened" };
@@ -703,6 +751,14 @@ function GlobeIcon() {
 		<svg {...icon} width={14} height={14}>
 			<circle cx="12" cy="12" r="9" />
 			<path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+		</svg>
+	);
+}
+
+function FolderIcon() {
+	return (
+		<svg {...icon} width={14} height={14}>
+			<path d="M3 6a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
 		</svg>
 	);
 }

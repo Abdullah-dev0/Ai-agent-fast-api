@@ -72,7 +72,8 @@ SYSTEM_PROMPT = (
     "call get_location, then pass its latitude and longitude to get_weather; if it "
     "returns an error, ask them which city. If they want to look into a CSV or "
     "spreadsheet of their own, call open_csv, then query_csv for what its summary "
-    "does not answer. For anything recent, changing or that you are unsure of (news, "
+    "does not answer. If they want help with files on their computer, call "
+    "open_folder, then read_files, then write_file for any change. For anything recent, changing or that you are unsure of (news, "
     "prices, releases, facts to check), call web_search first, then read_webpage on "
     "the one to three most useful results before answering. Base the answer on what "
     "you read, and cite sources inline as markdown links, like [Title](url). If the "
@@ -211,6 +212,11 @@ def describe_csv_query(tool_call: ToolCall, state: AgentState, runtime: Runtime)
     return f"Let the agent see the {what} from your file?"
 
 
+def describe_file_read(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """The approval question for read_files. What it reads goes to the model provider."""
+    return f"Let the agent read {', '.join(tool_call['args']['paths'])}?"
+
+
 def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
     return create_agent(
         model,
@@ -241,6 +247,11 @@ def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
                     "query_csv": {
                         "allowed_decisions": ["approve", "reject"],
                         "description": describe_csv_query,
+                    },
+                    # Same reason. write_file asks in its own card, which shows the diff.
+                    "read_files": {
+                        "allowed_decisions": ["approve", "reject"],
+                        "description": describe_file_read,
                     },
                 },
                 interrupt_mode="per_call",

@@ -1,4 +1,5 @@
 import { queryTable, summarize, toTable, type CsvQuery, type Table } from "./csv";
+import { applyWrite, listFiles, prepareWrite, readFiles, type OpenFolder } from "./folder";
 
 // Tools the agent runs in the browser, because only the browser has what they need.
 // The server pauses the run (interrupt() in agent-server/tools.py), useAgentChat
@@ -54,13 +55,66 @@ async function queryCsv(threadId: string, args: Record<string, unknown>): Promis
 	return queryTable(table, args as CsvQuery);
 }
 
+// The folder each chat has open. A reload forgets it, as with a CSV, and picking it
+// again is what lets the page touch the disk again.
+const openFolders = new Map<string, OpenFolder>();
+const NO_FOLDER = "No folder is open: the page was reloaded or none was chosen. Call open_folder first.";
+
+// Only Chrome, Edge and other Chromium browsers have the folder picker.
+export const canOpenFolders = () => "showDirectoryPicker" in window;
+
+/** The end of open_folder, from the click in the card (FolderPicker). */
+export async function pickFolder(threadId: string): Promise<BrowserToolResult | null> {
+	try {
+		const { showDirectoryPicker } = window as unknown as {
+			showDirectoryPicker: (options: { mode: "readwrite" }) => Promise<FileSystemDirectoryHandle>;
+		};
+		const root = await showDirectoryPicker({ mode: "readwrite" });
+		openFolders.set(threadId, { root, seen: new Map() });
+		return await listFiles(root);
+	} catch (e) {
+		// Closing the dialog is not an answer: the card stays up to try again or cancel.
+		if (e instanceof DOMException && e.name === "AbortError") return null;
+		return { error: e instanceof Error ? e.message : String(e) };
+	}
+}
+
+async function readFolderFiles(threadId: string, args: Record<string, unknown>): Promise<BrowserToolResult> {
+	const folder = openFolders.get(threadId);
+	if (!folder) return { error: NO_FOLDER };
+	return readFiles(folder, args.paths as string[]);
+}
+
+/** For the review card (WriteReview). Changes nothing on disk. */
+export async function reviewWrite(threadId: string, path: string, content: string) {
+	const folder = openFolders.get(threadId);
+	if (!folder) throw new Error(NO_FOLDER);
+	return prepareWrite(folder, path, content);
+}
+
+/** Runs only from the Apply button, so the agent has no way to write by itself. */
+export async function confirmWrite(threadId: string, path: string, content: string): Promise<BrowserToolResult> {
+	const folder = openFolders.get(threadId);
+	if (!folder) return { error: NO_FOLDER };
+	try {
+		return await applyWrite(folder, path, content);
+	} catch (e) {
+		return { error: e instanceof Error ? e.message : String(e) };
+	}
+}
+
 type BrowserTool = (threadId: string, args: Record<string, unknown>) => Promise<BrowserToolResult>;
 
-const BROWSER_TOOLS: Record<string, BrowserTool> = { get_location: getLocation, query_csv: queryCsv };
+const BROWSER_TOOLS: Record<string, BrowserTool> = {
+	get_location: getLocation,
+	query_csv: queryCsv,
+	read_files: readFolderFiles,
+};
 
-// These need a click: browsers only open a file picker from one, so the page shows
-// a card and answers when the user is done. No timeout, the user may take a while.
-export const needsUser = (name: string) => name === "open_csv";
+// These need a click: browsers only open a picker from one, and a write needs the
+// user's review, so the page shows a card and answers when the user is done. No
+// timeout, the user may take a while.
+export const needsUser = (name: string) => ["open_csv", "open_folder", "write_file"].includes(name);
 
 /** Always answers, so a broken or ignored tool cannot leave the chat paused. */
 export async function runBrowserTool(

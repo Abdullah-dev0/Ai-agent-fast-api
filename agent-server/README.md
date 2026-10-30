@@ -1,6 +1,6 @@
 # Agent server (Python)
 
-**Aragon**, a LangChain agent (Gemini + nine tools, web search included) served
+**Aragon**, a LangChain agent (Gemini + twelve tools, web search included) served
 by FastAPI over AG-UI. The
 Next.js app's `/agent` page talks to it with our own React hook,
 `useAgentChat` (`lib/use-agent-chat.ts`).
@@ -23,7 +23,7 @@ Then, in the project root, `npm run dev`, sign in and open **Agent**.
 
 | File | What it does |
 |---|---|
-| `tools.py` | The tools: current time, weather (Open-Meteo), a safe calculator, `web_search` and `read_webpage` (Tavily), and `delete_chat_history`, plus `get_location`, `open_csv` and `query_csv`, which the browser runs. `delete_chat_history`, `get_location` and `query_csv` need the user's approval. |
+| `tools.py` | The tools: current time, weather (Open-Meteo), a safe calculator, `web_search` and `read_webpage` (Tavily), and `delete_chat_history`, plus `get_location`, `open_csv`, `query_csv`, `open_folder`, `read_files` and `write_file`, which the browser runs. `delete_chat_history`, `get_location`, `query_csv` and `read_files` need the user's approval, and `write_file` shows a diff to apply or reject. |
 | `agent.py` | The agent: LangChain's `create_agent`, its name and system prompt (with today's date), and `HumanInTheLoopMiddleware` for the approval. Also the AG-UI wrapper. |
 | `main.py` | The API: `ag-ui-langgraph`'s endpoint to run the agent, plus history and clear. |
 | `history.py` | Turns a saved thread into the messages the page shows after a reload, in the same shape `useAgentChat` builds from the live stream. |
@@ -144,6 +144,31 @@ hold instructions aimed at the agent, so treat them like web pages.
 A reload forgets the file. The next `query_csv` returns an error telling the model
 to call `open_csv` again.
 
+## Folders on the user's computer (`open_folder`, `read_files`, `write_file`)
+
+The agent can read and change real files, through the browser's File System Access
+API (`lib/folder.ts`). This works only in Chrome, Edge and other Chromium browsers.
+The browser only checks that a path is inside the picked folder, and it has no undo,
+so every other rule here is ours:
+
+| Rule | Why |
+|---|---|
+| The user picks the folder with a click (`FolderPicker`) | Browsers require it |
+| `.env`, keys, `credentials*`, `.git`, `node_modules` and the like are never listed, read or written | What the agent reads goes to the model provider. This holds even if the user approves the read |
+| `read_files` needs approval, naming each file, at most 5 per call | A web page or a file could tell the agent to send something out |
+| Files are read whole or not at all (200 KB limit) | An agent that saw half a file and wrote it back would destroy the other half |
+| `write_file` writes only from the Apply button in a card showing the diff (`WriteReview`) | The agent has no way to write by itself |
+| A file must have been read before it is changed, and must not have changed since, checked again on Apply | So the user's own edits are never overwritten |
+| The old version is copied to `.agent-backups/<time>/` first; if that fails, nothing is written | There is no other undo |
+| There is no delete tool | Nothing asks for it yet, and it is the easiest way to lose data |
+
+A write goes through `createWritable()`, which changes the real file only on
+`close()`, so a crash midway leaves the original whole.
+
+The backups stay in the folder until the user removes them, and restoring one is by
+hand. Whole files go to the model and are saved with the chat in Postgres. A reload
+forgets the folder, so the agent has to ask for it again.
+
 ## Web search (`web_search`, `read_webpage`)
 
 Two tools that work together, so the agent researches instead of answering
@@ -174,8 +199,9 @@ Python, it searched, then answered with a release two years old.
 
 Web pages are untrusted text: a page could contain instructions aimed at the
 agent. Here the worst case is a wrong answer (the tools with side effects or
-private data, `delete_chat_history`, `get_location` and `query_csv`, need the user's
-approval), but keep that in mind before giving the agent tools that act.
+private data, `delete_chat_history`, `get_location`, `query_csv`, `read_files` and
+`write_file`, ask the user first), but keep that in mind before giving the agent
+tools that act.
 
 ## Its name
 
