@@ -131,7 +131,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 					const el = e.currentTarget;
 					atBottom.current = el.clientHeight + el.scrollTop >= el.scrollHeight - 120;
 				}}
-				className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto pt-4 pb-8 [scrollbar-width:none] [&>*]:shrink-0">
+				className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto pt-4 pb-8 scrollbar-none *:shrink-0">
 				{messages.map((message) =>
 					message.role === "user" ? (
 						<div
