@@ -1,0 +1,191 @@
+// READ-ONLY MAP OF THE DATABASE. Written by hand, so a new migration won't update it.
+//
+// This project does not use Prisma. The real tables are made by db/migrations,
+// Better Auth and LangGraph, and the code talks to them with plain SQL, so
+// editing this file changes nothing.
+// Do not run `prisma migrate` or `prisma db push` with it: this file leaves out
+// constraint names, so Prisma would try to change the real tables.
+//
+// Names match the real tables and columns, so they match the SQL in the code.
+// The mix of camelCase and snake_case is real too: Better Auth picks camelCase,
+// the app's own tables use snake_case.
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// LOGIN - tables owned by Better Auth (lib/auth.ts)
+// ============================================================================
+
+/// One person who signed up.
+model user {
+  id            String   @id
+  name          String
+  email         String   @unique
+  emailVerified Boolean
+  image         String?
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @db.Timestamptz(6)
+
+  // Deleting a user deletes all of these too (onDelete: Cascade below).
+  accounts account[]
+  sessions session[]
+  chats    chats[]
+}
+
+/// How a user logs in. For email and password, the password hash is stored here,
+/// not on `user`. One user could have several (email, Google, ...).
+model account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz(6)
+  refreshTokenExpiresAt DateTime? @db.Timestamptz(6)
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime  @db.Timestamptz(6)
+
+  user user @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// One signed-in browser. The cookie holds `token`; getUser() in lib/dal.ts
+/// looks it up here on each request.
+model session {
+  id        String   @id
+  expiresAt DateTime @db.Timestamptz(6)
+  token     String   @unique
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @db.Timestamptz(6)
+  ipAddress String?
+  userAgent String?
+  userId    String
+
+  user user @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Short-lived codes, such as for email verification or password reset.
+model verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([identifier])
+}
+
+// ============================================================================
+// THE APP - tables this project made itself (db/migrations)
+// ============================================================================
+
+/// One chat in a user's list. It holds no messages, only who owns the chat and
+/// its title. The messages are in `checkpoints`, where thread_id = chats.id.
+model chats {
+  id         String   @id
+  user_id    String
+  /// Null until the first message is sent.
+  title      String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+
+  user user @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, updated_at(sort: Desc)])
+}
+
+/// One row per call to the AI model, written by agent-server/agent.py. One reply
+/// can be several calls.
+///
+/// No @relation on purpose: there are no foreign keys, so these rows stay after
+/// their chat or user is deleted. user_id points at user.id and thread_id points
+/// at chats.id, but the database does not enforce either one.
+model token_usage {
+  id            BigInt   @id @default(autoincrement())
+  user_id       String
+  thread_id     String
+  message_id    String?
+  provider      String
+  model         String
+  input_tokens  Int
+  output_tokens Int
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([user_id, created_at])
+}
+
+/// Which files in db/migrations have already run (scripts/migrate.mts).
+model schema_migrations {
+  name       String   @id
+  applied_at DateTime @default(now()) @db.Timestamptz(6)
+}
+
+// ============================================================================
+// CONVERSATIONS - tables owned by LangGraph (agent-server/main.py creates them)
+//
+// LangGraph saves the agent's state after each step, and the messages are part
+// of that state. While running, only LangGraph uses these; the Next.js app asks
+// the agent server for messages rather than reading these tables.
+// thread_id = chats.id in all three, but there are no foreign keys.
+// ============================================================================
+
+/// One saved step of a conversation. parent_checkpoint_id points at the step
+/// before it, so the steps form a chain.
+model checkpoints {
+  thread_id            String
+  checkpoint_ns        String  @default("")
+  checkpoint_id        String
+  parent_checkpoint_id String?
+  type                 String?
+  checkpoint           Json
+  metadata             Json    @default("{}")
+
+  @@id([thread_id, checkpoint_ns, checkpoint_id])
+  @@index([thread_id])
+}
+
+/// The bigger values from a checkpoint, stored as raw bytes. Each value is stored
+/// once per version, so steps that did not change it can share the same row.
+model checkpoint_blobs {
+  thread_id     String
+  checkpoint_ns String  @default("")
+  channel       String
+  version       String
+  type          String
+  blob          Bytes?
+
+  @@id([thread_id, checkpoint_ns, channel, version])
+  @@index([thread_id])
+}
+
+/// Output from a step that LangGraph has saved but not yet merged into a
+/// checkpoint. This is what lets a stopped run pick up where it left off.
+model checkpoint_writes {
+  thread_id     String
+  checkpoint_ns String  @default("")
+  checkpoint_id String
+  task_id       String
+  idx           Int
+  channel       String
+  type          String?
+  blob          Bytes
+  task_path     String  @default("")
+
+  @@id([thread_id, checkpoint_ns, checkpoint_id, task_id, idx])
+  @@index([thread_id])
+}
+
+/// LangGraph's own record of which versions of its tables are installed.
+model checkpoint_migrations {
+  v Int @id
+}
