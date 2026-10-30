@@ -25,6 +25,8 @@ npm run dev                 # http://localhost:3000
 | `app/(app)/settings/page.tsx` | A client component showing the user with no props and no fetch |
 | `app/(marketing)/page.tsx` | No user access, so it stays static |
 | `proxy.ts` | Cookie-presence redirect only; no DB lookup |
+| `db/schema.sql` | Every table as it is in the database. Generated: after a migration, run `npm run db:schema` |
+| `app/(app)/agent/[id]/page.tsx` + `lib/actions.ts` | Several chats per user: the page checks the chat is yours, `chats.id` is the agent's thread id |
 
 ## Things to try
 

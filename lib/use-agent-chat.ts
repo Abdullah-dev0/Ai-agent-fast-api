@@ -156,6 +156,9 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	const [error, setError] = useState<Error>();
 	const abortRef = useRef<AbortController | null>(null);
 
+	// Switching to another chat stops this one's reply, like closing the page does.
+	useEffect(() => () => abortRef.current?.abort(), []);
+
 	// The saved chat and any approval still waiting (GET /agent in main.py).
 	useEffect(() => {
 		const controller = new AbortController();
@@ -274,15 +277,17 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	const stop = useCallback(() => abortRef.current?.abort(), []);
 
 	// Deletes the thread on the server (DELETE /agent), then empties the screen.
+	// Returns whether it worked.
 	const clear = useCallback(async () => {
 		const res = await fetch(`${url}?threadId=${encodeURIComponent(threadId)}`, { method: "DELETE" });
 		if (!res.ok) {
-			setError(new Error(`Could not clear the chat (${res.status})`));
-			return;
+			setError(new Error(`Could not delete the chat (${res.status})`));
+			return false;
 		}
 		setMessages([]);
 		setApprovals([]);
 		setContext(null);
+		return true;
 	}, [url, threadId]);
 
 	return {

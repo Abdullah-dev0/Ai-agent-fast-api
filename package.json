@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "migrate": "node --env-file=.env scripts/migrate.mts",
+    "db:schema": "docker compose exec -T db pg_dump -U app -d app --schema-only --no-owner --no-privileges --restrict-key=schema > db/schema.sql",
     "test": "vitest run"
   },
   "dependencies": {

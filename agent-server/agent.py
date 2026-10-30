@@ -173,20 +173,19 @@ def usage_recorder(pool: AsyncConnectionPool):
             thread_id = get_config()["configurable"]["thread_id"]
             async with pool.connection() as db:
                 await db.execute(
+                    # The thread id is chats.id, and the chat's row says whose it is.
+                    # The browser sends the id unchecked: see the caveat in main.py.
                     """INSERT INTO token_usage
                        (user_id, thread_id, message_id, provider, model, input_tokens, output_tokens)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                       SELECT user_id, id, %s, %s, %s, %s, %s FROM chats WHERE id = %s""",
                     (
-                        # The page's thread id is tanstack:<user id> (app/(app)/agent/page.tsx).
-                        # The browser sends it unchecked: see the caveat in main.py.
-                        thread_id.removeprefix("tanstack:"),
-                        thread_id,
                         message.id,
                         PROVIDER,
                         # The model that really answered, which openrouter/free picks per call.
                         message.response_metadata.get("model_name") or MODEL_NAME,
                         message.usage_metadata.get("input_tokens", 0),
                         message.usage_metadata.get("output_tokens", 0),
+                        thread_id,
                     ),
                 )
         except Exception:

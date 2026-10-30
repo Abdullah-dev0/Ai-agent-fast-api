@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { deleteChat, touchChat } from "@/lib/actions";
 import {
 	THINKING_LEVELS,
 	useAgentChat,
@@ -44,7 +45,7 @@ const MARKDOWN =
 export function AgentChat({ threadId }: { threadId: string }) {
 	const [input, setInput] = useState("");
 	const [thinkingLevel, setThinkingLevel] = useState(savedThinking);
-	const [clearing, startClear] = useTransition();
+	const [deleting, startDelete] = useTransition();
 	const [answering, startAnswer] = useTransition();
 	const { messages, approvals, context, loading, running, thinking, error, send, answer, stop, clear } = useAgentChat({
 		url: AGENT_URL,
@@ -60,13 +61,18 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		if (el && atBottom.current) el.scrollTo({ top: el.scrollHeight });
 	}, [messages, thinking, approvals, loading]);
 
+	// The thread first: if that fails, the chat stays in the list.
+	async function removeChat() {
+		if (await clear()) await deleteChat(threadId);
+	}
+
 	function decide(approved: boolean) {
 		startAnswer(async () => {
-			const deleting = approvals.some((a) => a.name === "delete_chat_history");
+			const deleteAsked = approvals.some((a) => a.name === "delete_chat_history");
 			await answer(approved);
 			// The tool only says "approved"; the thread is deleted now that the
 			// reply has ended, so the agent was not still writing to it.
-			if (approved && deleting) setTimeout(() => clear(), 1000);
+			if (approved && deleteAsked) setTimeout(removeChat, 1000);
 		});
 	}
 
@@ -75,6 +81,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		if (!text || running || loading || approvals.length > 0) return;
 		atBottom.current = true;
 		void send(text, thinkingLevel);
+		void touchChat(threadId, text);
 		setInput("");
 	}
 
@@ -87,9 +94,9 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		}
 	}
 
-	function clearChat() {
-		if (!confirm("Clear this chat? This cannot be undone.")) return;
-		startClear(clear);
+	function confirmDelete() {
+		if (!confirm("Delete this chat? This cannot be undone.")) return;
+		startDelete(removeChat);
 	}
 
 	const composer = (
@@ -123,12 +130,12 @@ export function AgentChat({ threadId }: { threadId: string }) {
 				{context && <ContextMeter context={context} />}
 				<button
 					type="button"
-					onClick={clearChat}
-					// A streaming reply would save itself back after the clear.
-					disabled={clearing || running}
+					onClick={confirmDelete}
+					// A streaming reply would save itself back after the delete.
+					disabled={deleting || running}
 					className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
 					<TrashIcon />
-					{clearing ? "Clearing…" : "Clear chat"}
+					{deleting ? "Deleting…" : "Delete chat"}
 				</button>
 			</div>
 
@@ -220,7 +227,7 @@ function ContextMeter({ context: { used, limit } }: { context: ContextUsage }) {
 	const percent = limit ? (used / limit) * 100 : null;
 	return (
 		<span
-			title="How much of the model's memory for this chat is used. Clearing the chat frees it."
+			title="How much of the model's memory for this chat is used. A new chat starts empty."
 			className="flex items-center gap-2 text-xs text-zinc-500">
 			{percent !== null && (
 				<span className="h-1.5 w-16 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">

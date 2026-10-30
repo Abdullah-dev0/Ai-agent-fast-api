@@ -45,7 +45,7 @@ streamed events ("run started", "a piece of text", "tool called", "reasoning",
 |---|---|
 | `POST /agent` | Runs the agent and streams the reply. `ag-ui-langgraph`'s `add_langgraph_fastapi_endpoint`. |
 | `GET /agent?threadId=` | `{ messages, interrupts }`: the saved chat and any approval still waiting. |
-| `DELETE /agent?threadId=` | Deletes the thread (the Clear chat button, and after an approved `delete_chat_history`). |
+| `DELETE /agent?threadId=` | Deletes the thread (the Delete chat button, and after an approved `delete_chat_history`). The page then removes the `chats` row. |
 | `GET /agent/health` | Health check. |
 
 The reply runs inside the POST request. **Stop** (or closing the page) closes
@@ -155,7 +155,8 @@ vanish from the page. It needs a separate table for the page's history first.
 - **The Python server has no login.** It listens on `127.0.0.1` only. Anyone
   who can reach it could read, run or delete any thread by guessing its id.
   Before deploying, put a route in front of it that checks the user's session
-  and picks the thread itself, or add auth to FastAPI.
+  and picks the thread itself, or add auth to FastAPI. The `/agent/[id]` page
+  checks that the chat is yours, but the browser then calls this server directly.
 - **Gemini free tier is slow and limited.** Replies can take 10 to 20 seconds
   to start, and you can hit 429/503 errors.
 - **Windows:** the server runs on a `SelectorEventLoop`, because the Postgres
