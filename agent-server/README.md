@@ -136,6 +136,20 @@ model to break such rules.
 adapter streams them as `REASONING_*` events, the hook shows them as
 `reasoning` parts, and `history.py` restores them after a reload.
 
+## Long chats
+
+Once a chat passes about 30,000 tokens (an estimate, not Gemini's own count),
+`ContextEditingMiddleware` in `agent.py` replaces all but the 3 newest tool
+results with a short note. The model can call the tool again if it needs one.
+
+This only changes the copy sent to the model. The checkpointer keeps every
+result, so the page still shows them after a reload. Plain text messages are
+never removed, so a long chat with few tools still grows.
+
+Do not add `SummarizationMiddleware` as things stand: it deletes the old messages
+from the checkpointer, and `GET /agent` reads the chat from there, so they would
+vanish from the page. It needs a separate table for the page's history first.
+
 ## Things to know before using this for real
 
 - **The Python server has no login.** It listens on `127.0.0.1` only. Anyone
@@ -150,6 +164,7 @@ adapter streams them as `REASONING_*` events, the hook shows them as
 ## Sources
 
 - LangChain: "Agents" (`create_agent`) and "Human-in-the-loop" (`HumanInTheLoopMiddleware`, `per_call`) at docs.langchain.com
+- LangChain: "Prebuilt middleware" (`ContextEditingMiddleware`, `SummarizationMiddleware`) at docs.langchain.com
 - LangGraph: Postgres checkpointer, interrupts at docs.langchain.com
 - AG-UI: events, `RunAgentInput`, interrupts and `resume` at docs.ag-ui.com
 - Gemini in LangChain: `langchain-google-genai` (`include_thoughts`; reads `GOOGLE_API_KEY`, then `GEMINI_API_KEY`)

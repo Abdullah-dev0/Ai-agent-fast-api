@@ -31,7 +31,7 @@ from history import to_ui_messages
 # Reuse the Next.js app's .env: GEMINI_API_KEY and DATABASE_URL live there.
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from agent import build_agui_agent, build_graph  # noqa: E402  (needs the env vars loaded first)
+from agent import build_agui_agent, build_graph, latest_context_usage  # noqa: E402  (needs the env vars loaded first)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -61,8 +61,10 @@ async def chat_history(threadId: str, request: Request):
     config = {"configurable": {"thread_id": threadId}}
     state = await request.app.state.graph.aget_state(config)
     pending = [i for task in state.tasks for i in task.interrupts]
+    messages = state.values.get("messages", [])
     return {
-        "messages": to_ui_messages(state.values.get("messages", [])),
+        "messages": to_ui_messages(messages),
+        "context": latest_context_usage(messages),
         # Approvals still waiting for an answer, so a reloaded page shows them
         # again. Same AG-UI shape as the interrupts in a live RUN_FINISHED.
         "interrupts": [lg_interrupt_to_agui(i).model_dump(by_alias=True, exclude_none=True) for i in pending],

@@ -3,7 +3,14 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { THINKING_LEVELS, useAgentChat, type ChatMessage, type Part, type ThinkingLevel } from "@/lib/use-agent-chat";
+import {
+	THINKING_LEVELS,
+	useAgentChat,
+	type ChatMessage,
+	type ContextUsage,
+	type Part,
+	type ThinkingLevel,
+} from "@/lib/use-agent-chat";
 
 const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL ?? "http://127.0.0.1:8123/agent";
 const THINKING_KEY = "agent-chat-thinking";
@@ -39,7 +46,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	const [thinkingLevel, setThinkingLevel] = useState(savedThinking);
 	const [clearing, startClear] = useTransition();
 	const [answering, startAnswer] = useTransition();
-	const { messages, approvals, loading, running, thinking, error, send, answer, stop, clear } = useAgentChat({
+	const { messages, approvals, context, loading, running, thinking, error, send, answer, stop, clear } = useAgentChat({
 		url: AGENT_URL,
 		threadId,
 	});
@@ -112,7 +119,8 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	const last = messages.at(-1);
 	return (
 		<div className="flex min-h-0 flex-1 flex-col">
-			<div className="flex justify-end pt-3">
+			<div className="flex items-center justify-end gap-3 pt-3">
+				{context && <ContextMeter context={context} />}
 				<button
 					type="button"
 					onClick={clearChat}
@@ -202,6 +210,30 @@ function MarkdownText({ text }: { text: string }) {
 			}}>
 			{text}
 		</Markdown>
+	);
+}
+
+const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+
+// How much of the model's context the chat has filled, like "12.4K / 200K (6%)".
+function ContextMeter({ context: { used, limit } }: { context: ContextUsage }) {
+	const percent = limit ? (used / limit) * 100 : null;
+	return (
+		<span
+			title="How much of the model's memory for this chat is used. Clearing the chat frees it."
+			className="flex items-center gap-2 text-xs text-zinc-500">
+			{percent !== null && (
+				<span className="h-1.5 w-16 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+					<span
+						style={{ width: `${Math.min(percent, 100)}%` }}
+						className={`block h-full rounded-full ${percent >= 80 ? "bg-red-600" : "bg-zinc-500"}`}
+					/>
+				</span>
+			)}
+			{limit
+				? `${compact.format(used)} / ${compact.format(limit)} (${percent! < 1 ? "<1" : Math.round(percent!)}%)`
+				: `${compact.format(used)} tokens`}
+		</span>
 	);
 }
 

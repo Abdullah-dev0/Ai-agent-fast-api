@@ -8,13 +8,22 @@ delete_chat_history comes from HumanInTheLoopMiddleware (docs: "Human-in-the-loo
 import logging
 import os
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import NotRequired
 
 from ag_ui_langgraph import LangGraphAgent
 from langchain.agents import AgentState, create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, ModelRequest, dynamic_prompt, wrap_model_call
+from langchain.agents.middleware import (
+    ClearToolUsesEdit,
+    ContextEditingMiddleware,
+    HumanInTheLoopMiddleware,
+    ModelRequest,
+    dynamic_prompt,
+    wrap_model_call,
+)
 from langchain.chat_models import init_chat_model
-from langchain.messages import AIMessage
+from langchain.messages import AIMessage, AnyMessage
+from langchain_core.callbacks import adispatch_custom_event
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.config import get_config
 from psycopg_pool import AsyncConnectionPool
@@ -108,16 +117,59 @@ async def use_thinking_level(request: ModelRequest, handler):
     return await handler(request)
 
 
+@lru_cache
+def context_limit(model_name: str) -> int | None:
+    """The most tokens one request to this model can hold, from LangChain's model
+    profiles. openrouter/free picks a model per call: that model's limit if LangChain
+    knows it, else the router's own. None if neither is known."""
+    profile = init_chat_model(f"{PROVIDER}:{model_name}").profile or model.profile or {}
+    return profile.get("max_input_tokens")
+
+
+def context_usage(message: AIMessage) -> dict:
+    """How full the context is after this model call. Every call resends the whole
+    conversation, so this call's input plus its output is what the next one carries.
+    Not the sum over calls that token_usage and the reply's usage row add up."""
+    usage = message.usage_metadata
+    return {
+        "used": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+        "limit": context_limit(message.response_metadata.get("model_name") or MODEL_NAME),
+    }
+
+
+def latest_context_usage(messages: list[AnyMessage]) -> dict | None:
+    """For GET /agent, so a reloaded page shows the same number. None: nothing measured yet."""
+    last = next((m for m in reversed(messages) if isinstance(m, AIMessage) and m.usage_metadata), None)
+    return context_usage(last) if last else None
+
+
+# Old tool results (mostly web pages) are the biggest part of a long chat. Once the
+# conversation passes about 30,000 tokens, the model gets a short note in place of
+# all but the 3 newest results. Only the copy sent to the model changes: the saved
+# chat stays whole, so the page still shows the old results after a reload.
+clear_old_tool_results = ContextEditingMiddleware(
+    edits=[
+        ClearToolUsesEdit(
+            trigger=30_000,
+            keep=3,
+            placeholder="[Old result removed to save space. Call the tool again if you need it.]",
+        )
+    ]
+)
+
+
 def usage_recorder(pool: AsyncConnectionPool):
     @wrap_model_call
     async def record_usage(request: ModelRequest, handler):
-        """Saves one token_usage row per finished model call. A stopped call reports
-        no usage, so it gets no row. A failed save is logged and the reply goes on."""
+        """Tells the page how full the context is (a CUSTOM event, so it updates during
+        a tool loop) and saves one token_usage row per finished model call. A stopped
+        call reports no usage, so it gets neither. A failure is logged and the reply goes on."""
         response = await handler(request)
         message = next((m for m in response.result if isinstance(m, AIMessage)), None)
         if message is None or not message.usage_metadata:
             return response
         try:
+            await adispatch_custom_event("context_usage", context_usage(message))
             thread_id = get_config()["configurable"]["thread_id"]
             async with pool.connection() as db:
                 await db.execute(
@@ -153,6 +205,7 @@ def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
             system_prompt_with_date,
             use_thinking_level,
             usage_recorder(pool),
+            clear_old_tool_results,
             # per_call: one interrupt per tool call, answered with a single
             # decision ({"type": "approve"} or {"type": "reject"}). The docs
             # recommend it for new agents.

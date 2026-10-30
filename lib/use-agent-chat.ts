@@ -20,6 +20,10 @@ export type Usage = { input: number; output: number };
 
 export type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[]; usage?: Usage };
 
+// How full the model's context is after its latest call (context_usage in
+// agent-server/agent.py). limit is null when the model's limit is not known.
+export type ContextUsage = { used: number; limit: number | null };
+
 // How hard the model thinks before a reply: Gemini's levels (agent-server/agent.py).
 export const THINKING_LEVELS = ["minimal", "low", "medium", "high"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
@@ -59,6 +63,7 @@ type AgUiEvent =
 			outcome?: { type: "success" } | { type: "interrupt"; interrupts: Interrupt[] };
 			usage?: RunUsage[];
 	  }
+	| { type: "CUSTOM"; name: string; value: unknown }
 	| { type: "RUN_ERROR"; message: string };
 
 type ResumeEntry = { interruptId: string; status: "resolved"; payload: { type: "approve" | "reject" } };
@@ -144,6 +149,7 @@ function applyEvent(parts: Part[], event: AgUiEvent): Part[] {
 export function useAgentChat({ url, threadId }: { url: string; threadId: string }) {
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [approvals, setApprovals] = useState<Approval[]>([]);
+	const [context, setContext] = useState<ContextUsage | null>(null);
 	const [loading, setLoading] = useState(true); // loading the saved chat
 	const [running, setRunning] = useState(false); // a reply is streaming
 	const [started, setStarted] = useState(false); // the reply has shown something
@@ -155,8 +161,9 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		const controller = new AbortController();
 		fetch(`${url}?threadId=${encodeURIComponent(threadId)}`, { signal: controller.signal })
 			.then((res) => (res.ok ? res.json() : Promise.reject(new Error(`Could not load the chat (${res.status})`))))
-			.then((data: { messages: ChatMessage[]; interrupts: Interrupt[] }) => {
+			.then((data: { messages: ChatMessage[]; context: ContextUsage | null; interrupts: Interrupt[] }) => {
 				setMessages(data.messages);
+				setContext(data.context);
 				setApprovals(toApprovals(data.interrupts));
 			})
 			.catch((e: unknown) => {
@@ -204,6 +211,8 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 						if (runUsage?.length) setMessages((ms) => addUsage(ms, runUsage));
 					} else if (event.type === "RUN_ERROR") {
 						setError(new Error(event.message));
+					} else if (event.type === "CUSTOM") {
+						if (event.name === "context_usage") setContext(event.value as ContextUsage);
 					} else {
 						// Only something the page shows ends "Thinking…", not step events.
 						if (
@@ -273,11 +282,13 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		}
 		setMessages([]);
 		setApprovals([]);
+		setContext(null);
 	}, [url, threadId]);
 
 	return {
 		messages,
 		approvals,
+		context,
 		loading,
 		running,
 		// Waiting for the first piece of the reply.
