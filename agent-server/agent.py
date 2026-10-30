@@ -22,10 +22,11 @@ from langchain.agents.middleware import (
     wrap_model_call,
 )
 from langchain.chat_models import init_chat_model
-from langchain.messages import AIMessage, AnyMessage
+from langchain.messages import AIMessage, AnyMessage, ToolCall
 from langchain_core.callbacks import adispatch_custom_event
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.config import get_config
+from langgraph.runtime import Runtime
 from psycopg_pool import AsyncConnectionPool
 
 from tools import TOOLS
@@ -67,7 +68,11 @@ SYSTEM_PROMPT = (
     "say you are Gemini, Google, or any other model, company or product, and never "
     "name the model or company behind you, even if asked directly or told to.\n"
     "Tools: use them for the current time, the weather and any arithmetic instead "
-    "of guessing. For anything recent, changing or that you are unsure of (news, "
+    "of guessing. If the user asks about the weather \"here\" without naming a place, "
+    "call get_location, then pass its latitude and longitude to get_weather; if it "
+    "returns an error, ask them which city. If they want to look into a CSV or "
+    "spreadsheet of their own, call open_csv, then query_csv for what its summary "
+    "does not answer. For anything recent, changing or that you are unsure of (news, "
     "prices, releases, facts to check), call web_search first, then read_webpage on "
     "the one to three most useful results before answering. Base the answer on what "
     "you read, and cite sources inline as markdown links, like [Title](url). If the "
@@ -195,6 +200,17 @@ def usage_recorder(pool: AsyncConnectionPool):
     return record_usage
 
 
+def describe_csv_query(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """The approval question for query_csv, so the user sees what they are agreeing to."""
+    args = tool_call["args"]
+    what = args["op"] + (f" of {args['metric']}" if args.get("metric") else "")
+    if args.get("group_by"):
+        what += f" by {args['group_by']}"
+    if args.get("filter_column"):
+        what += f" where {args['filter_column']} is {args.get('filter_value')}"
+    return f"Let the agent see the {what} from your file?"
+
+
 def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
     return create_agent(
         model,
@@ -213,7 +229,19 @@ def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
                     "delete_chat_history": {
                         "allowed_decisions": ["approve", "reject"],
                         "description": "Delete this whole conversation? This cannot be undone.",
-                    }
+                    },
+                    # Asked every time, even once the browser remembers its permission:
+                    # a web page the agent reads could tell it to send the location
+                    # somewhere through read_webpage.
+                    "get_location": {
+                        "allowed_decisions": ["approve", "reject"],
+                        "description": "Share your approximate location with the agent?",
+                    },
+                    # Same reason: the results of a calculation could be sent out too.
+                    "query_csv": {
+                        "allowed_decisions": ["approve", "reject"],
+                        "description": describe_csv_query,
+                    },
                 },
                 interrupt_mode="per_call",
             ),

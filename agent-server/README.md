@@ -1,6 +1,6 @@
 # Agent server (Python)
 
-**Aragon**, a LangChain agent (Gemini + six tools, web search included) served
+**Aragon**, a LangChain agent (Gemini + nine tools, web search included) served
 by FastAPI over AG-UI. The
 Next.js app's `/agent` page talks to it with our own React hook,
 `useAgentChat` (`lib/use-agent-chat.ts`).
@@ -23,7 +23,7 @@ Then, in the project root, `npm run dev`, sign in and open **Agent**.
 
 | File | What it does |
 |---|---|
-| `tools.py` | The tools: current time, weather (Open-Meteo), a safe calculator, `web_search` and `read_webpage` (Tavily), and `delete_chat_history`, which needs the user's approval. |
+| `tools.py` | The tools: current time, weather (Open-Meteo), a safe calculator, `web_search` and `read_webpage` (Tavily), and `delete_chat_history`, plus `get_location`, `open_csv` and `query_csv`, which the browser runs. `delete_chat_history`, `get_location` and `query_csv` need the user's approval. |
 | `agent.py` | The agent: LangChain's `create_agent`, its name and system prompt (with today's date), and `HumanInTheLoopMiddleware` for the approval. Also the AG-UI wrapper. |
 | `main.py` | The API: `ag-ui-langgraph`'s endpoint to run the agent, plus history and clear. |
 | `history.py` | Turns a saved thread into the messages the page shows after a reload, in the same shape `useAgentChat` builds from the live stream. |
@@ -44,7 +44,7 @@ streamed events ("run started", "a piece of text", "tool called", "reasoning",
 | Route | What it does |
 |---|---|
 | `POST /agent` | Runs the agent and streams the reply. `ag-ui-langgraph`'s `add_langgraph_fastapi_endpoint`. |
-| `GET /agent?threadId=` | `{ messages, interrupts }`: the saved chat and any approval still waiting. |
+| `GET /agent?threadId=` | `{ messages, interrupts }`: the saved chat and any approval or browser tool still waiting. |
 | `DELETE /agent?threadId=` | Deletes the thread (the Delete chat button, and after an approved `delete_chat_history`). The page then removes the `chats` row. |
 | `GET /agent/health` | Health check. |
 
@@ -81,8 +81,7 @@ runs shows only what is saved so far.
    field: `[{ interruptId, status: "resolved", payload: { type: "approve" | "reject" } }]`.
    The adapter passes the payload to the middleware as `Command(resume=...)`.
    AG-UI requires one `resume` to answer every open interrupt, so the page
-   answers all of them with one decision (only one tool asks, so in practice
-   there is one).
+   answers all of them with one decision (two at once is rare).
 3. Deny: the tool does not run, and Gemini is told so. Approve: the tool runs,
    and when the reply ends the page calls `DELETE /agent` and clears the screen.
 
@@ -92,6 +91,58 @@ A waiting approval is saved by the checkpointer, so after a reload
 
 A denied call streams no result (the middleware answers without running the
 tool), so the page labels it "Not run" until a reload shows the reason.
+
+## Browser tools (`get_location`)
+
+Some tools need something only the browser has. The server declares the tool, but
+the page runs it:
+
+1. Gemini calls `get_location`, and the user approves it (see above). It asks every
+   time, because a web page the agent reads could tell it to send the location
+   somewhere through `read_webpage`.
+2. The tool calls LangGraph's `interrupt({ type: "browser_tool", name, tool_call_id })`.
+   The run ends with `RUN_FINISHED` outcome `interrupt`, the same as an approval.
+3. `useAgentChat` sees `browser_tool`, runs the tool from `BROWSER_TOOLS` in
+   `lib/browser-tools.ts`, and starts a new run with the result in `resume`.
+4. LangGraph starts the tool function again and `interrupt()` returns that result,
+   which becomes the tool's output. Anything above `interrupt()` runs twice, so keep
+   side effects below it.
+
+A tool that fails or gets no answer in 30 seconds returns `{ error }`, so the model
+can ask the user instead of the reply failing. A waiting tool is saved like an
+approval, so a reload runs it again.
+
+The location is rounded to about 1 km in the browser, because it is saved with the
+chat and sent to the model. The result comes from the browser, so it can be faked:
+never use it for anything that needs to be true, like permissions or prices.
+
+To add one: write the function in `BROWSER_TOOLS`, and a `@tool` in `tools.py` that
+calls `_ask_browser()` the same way.
+
+## Files on the user's computer (`open_csv`, `query_csv`)
+
+Two browser tools that work together, so the agent can answer questions about a
+file it never receives:
+
+1. `open_csv` needs a click, because browsers only open a file picker from one. So
+   the hook does not run it (`needsUser` in `lib/browser-tools.ts`): the page shows
+   a card (`CsvPicker`), and picking a file or pressing Cancel answers the interrupt.
+2. The browser reads the file (`lib/csv.ts`, up to 50 MB) and keeps it in memory for
+   that chat. The model gets only the column names and stats and the first 3 rows.
+3. `query_csv(op, metric, group_by, filter_column, filter_value, limit)` runs in the
+   browser on that file. The arguments come from the model, carried in the interrupt.
+   The page draws the result as bars (`CsvBars`), and the model gets the numbers.
+
+Picking the file is the consent for the summary. Each `query_csv` asks for approval,
+with a question built from its arguments (`describe_csv_query` in `agent.py`), for the
+same reason as `get_location`: a web page could tell the agent to send results out.
+
+The 3 sample rows and the results still go to the model and are saved with the chat,
+so this is not private for a file where any one row is secret. The cells could also
+hold instructions aimed at the agent, so treat them like web pages.
+
+A reload forgets the file. The next `query_csv` returns an error telling the model
+to call `open_csv` again.
 
 ## Web search (`web_search`, `read_webpage`)
 
@@ -122,9 +173,9 @@ today's date. Without it Gemini trusted its training: asked for the latest
 Python, it searched, then answered with a release two years old.
 
 Web pages are untrusted text: a page could contain instructions aimed at the
-agent. Here the worst case is a wrong answer (the only tool with side effects,
-`delete_chat_history`, needs the user's approval), but keep that in mind before
-giving the agent tools that act.
+agent. Here the worst case is a wrong answer (the tools with side effects or
+private data, `delete_chat_history`, `get_location` and `query_csv`, need the user's
+approval), but keep that in mind before giving the agent tools that act.
 
 ## Its name
 

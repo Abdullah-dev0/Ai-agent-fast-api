@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { needsUser, runBrowserTool, type BrowserToolResult } from "./browser-tools";
 
 // Our own chat hook for the Python agent server (agent-server/main.py).
 // The server streams AG-UI events (https://docs.ag-ui.com); this hook turns them
@@ -37,8 +38,11 @@ export type Approval = {
 	description: string;
 };
 
-// An AG-UI interrupt, as it arrives in RUN_FINISHED or from GET /agent. The
-// middleware's request rides in metadata.langgraph.raw.
+// A tool the page has to run itself (get_location in agent-server/tools.py).
+export type BrowserCall = { id: string; toolCallId: string; name: string; args: Record<string, unknown> };
+
+// An AG-UI interrupt, as it arrives in RUN_FINISHED or from GET /agent. What paused
+// the run rides in metadata.langgraph.raw: the middleware's request or a browser tool's.
 type Interrupt = {
 	id: string;
 	metadata?: {
@@ -66,13 +70,21 @@ type AgUiEvent =
 	| { type: "CUSTOM"; name: string; value: unknown }
 	| { type: "RUN_ERROR"; message: string };
 
-type ResumeEntry = { interruptId: string; status: "resolved"; payload: { type: "approve" | "reject" } };
+type ResumeEntry = { interruptId: string; status: "resolved"; payload: { type: "approve" | "reject" } | BrowserToolResult };
 
 function toApprovals(interrupts: Interrupt[]): Approval[] {
 	return interrupts.flatMap((i) => {
 		const raw = i.metadata?.langgraph?.raw;
 		if (raw?.type !== "tool_approval") return [];
 		return [{ id: i.id, toolCallId: raw.tool_call_id, name: raw.name, args: raw.args, description: raw.description }];
+	});
+}
+
+function toBrowserCalls(interrupts: Interrupt[]): BrowserCall[] {
+	return interrupts.flatMap((i) => {
+		const raw = i.metadata?.langgraph?.raw;
+		if (raw?.type !== "browser_tool") return [];
+		return [{ id: i.id, toolCallId: raw.tool_call_id, name: raw.name, args: raw.args ?? {} }];
 	});
 }
 
@@ -123,7 +135,10 @@ function applyEvent(parts: Part[], event: AgUiEvent): Part[] {
 			return parts.map((p, i) => (i === at && p.type === type ? { ...p, text: p.text + event.delta } : p));
 		}
 		case "TOOL_CALL_START":
-			if (parts.some((p) => p.type === "tool" && p.id === event.toolCallId)) return parts;
+			// A resumed run starts the paused call again and resends its arguments, so
+			// clear the first copy. The end-of-run snapshot fills them in if none come.
+			if (parts.some((p) => p.type === "tool" && p.id === event.toolCallId))
+				return parts.map((p) => (p.type === "tool" && p.id === event.toolCallId ? { ...p, args: undefined } : p));
 			return [...parts, { type: "tool", id: event.toolCallId, name: event.toolCallName }];
 		case "TOOL_CALL_ARGS":
 			return parts.map((p) =>
@@ -149,14 +164,17 @@ function applyEvent(parts: Part[], event: AgUiEvent): Part[] {
 export function useAgentChat({ url, threadId }: { url: string; threadId: string }) {
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [approvals, setApprovals] = useState<Approval[]>([]);
+	const [browserCalls, setBrowserCalls] = useState<BrowserCall[]>([]);
 	const [context, setContext] = useState<ContextUsage | null>(null);
 	const [loading, setLoading] = useState(true); // loading the saved chat
 	const [running, setRunning] = useState(false); // a reply is streaming
 	const [started, setStarted] = useState(false); // the reply has shown something
 	const [error, setError] = useState<Error>();
 	const abortRef = useRef<AbortController | null>(null);
+	const startedCalls = useRef(new Set<string>()); // browser tools already run
+	const callResults = useRef(new Map<string, BrowserToolResult>()); // their answers so far
 
-	// The saved chat and any approval still waiting (GET /agent in main.py).
+	// The saved chat and any approval or browser tool still waiting (GET /agent in main.py).
 	// Next hides a chat you switch away from instead of unmounting it, so its reply
 	// keeps streaming and this effect runs again when you come back. The saved copy
 	// is behind that reply: leave the screen alone while one is running.
@@ -169,6 +187,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 				setMessages(data.messages);
 				setContext(data.context);
 				setApprovals(toApprovals(data.interrupts));
+				setBrowserCalls(toBrowserCalls(data.interrupts));
 			})
 			.catch((e: unknown) => {
 				if (!controller.signal.aborted) setError(e instanceof Error ? e : new Error(String(e)));
@@ -192,6 +211,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 			setStarted(false);
 			setError(undefined);
 			setApprovals([]);
+			setBrowserCalls([]);
 			try {
 				const res = await fetch(url, {
 					method: "POST",
@@ -210,7 +230,10 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 				if (!res.ok || !res.body) throw new Error(`The agent server answered ${res.status}`);
 				for await (const event of readEvents(res.body)) {
 					if (event.type === "RUN_FINISHED") {
-						if (event.outcome?.type === "interrupt") setApprovals(toApprovals(event.outcome.interrupts));
+						if (event.outcome?.type === "interrupt") {
+							setApprovals(toApprovals(event.outcome.interrupts));
+							setBrowserCalls(toBrowserCalls(event.outcome.interrupts));
+						}
 						const runUsage = event.usage;
 						if (runUsage?.length) setMessages((ms) => addUsage(ms, runUsage));
 					} else if (event.type === "RUN_ERROR") {
@@ -258,9 +281,35 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		[run],
 	);
 
+	// Saves one browser tool's answer. AG-UI requires a resume to cover all open
+	// interrupts, so the run goes on once the last tool has answered. Approvals come
+	// first (the middleware pauses before any tool runs), so none is left unanswered.
+	const finishBrowserCall = useCallback(
+		(id: string, result: BrowserToolResult) => {
+			callResults.current.set(id, result);
+			const resume = browserCalls.flatMap((c): ResumeEntry[] => {
+				const payload = callResults.current.get(c.id);
+				return payload ? [{ interruptId: c.id, status: "resolved", payload }] : [];
+			});
+			if (resume.length === browserCalls.length) void run({ messages: [], resume });
+		},
+		[browserCalls, run],
+	);
+
+	// Runs the tools that need no click. The same interrupt can arrive twice (coming
+	// back to a hidden chat loads it again), and running it twice would ask the user
+	// twice, hence startedCalls.
+	useEffect(() => {
+		for (const c of browserCalls) {
+			if (needsUser(c.name) || startedCalls.current.has(c.id)) continue;
+			startedCalls.current.add(c.id);
+			void runBrowserTool(c.name, threadId, c.args).then((result) => finishBrowserCall(c.id, result));
+		}
+	}, [browserCalls, threadId, finishBrowserCall]);
+
 	// Answers every waiting approval with one decision: AG-UI requires a resume to
-	// cover all open interrupts, and only delete_chat_history asks, so there is
-	// at most one in practice.
+	// cover all open interrupts, and a model can ask for two tools at once, but that
+	// is rare enough not to need a button per tool.
 	const answer = useCallback(
 		(approved: boolean) =>
 			run({
@@ -287,6 +336,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		}
 		setMessages([]);
 		setApprovals([]);
+		setBrowserCalls([]);
 		setContext(null);
 		return true;
 	}, [url, threadId]);
@@ -294,6 +344,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	return {
 		messages,
 		approvals,
+		browserCalls,
 		context,
 		loading,
 		running,
@@ -302,6 +353,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		error,
 		send,
 		answer,
+		finishBrowserCall,
 		stop,
 		clear,
 	};
