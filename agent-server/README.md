@@ -23,7 +23,7 @@ Then, in the project root, `npm run dev`, sign in and open **Agent**.
 
 | File | What it does |
 |---|---|
-| `tools.py` | The tools: current time, weather (Open-Meteo), a safe calculator, `web_search` and `read_webpage` (Tavily), and `delete_chat_history`, plus `get_location`, `open_csv`, `query_csv`, `open_folder`, `read_files` and `write_file`, which the browser runs. `delete_chat_history`, `get_location`, `query_csv` and `read_files` need the user's approval, and `write_file` shows a diff to apply or reject. |
+| `tools.py` | The tools: current time, weather (Open-Meteo), a safe calculator, `web_search` and `read_webpage` (Tavily), and `delete_chat_history`, which needs the user's approval. |
 | `agent.py` | The agent: LangChain's `create_agent`, its name and system prompt (with today's date), and `HumanInTheLoopMiddleware` for the approval. Also the AG-UI wrapper. |
 | `main.py` | The API: `ag-ui-langgraph`'s endpoint to run the agent, plus history and clear. |
 | `history.py` | Turns a saved thread into the messages the page shows after a reload, in the same shape `useAgentChat` builds from the live stream. |
@@ -44,7 +44,7 @@ streamed events ("run started", "a piece of text", "tool called", "reasoning",
 | Route | What it does |
 |---|---|
 | `POST /agent` | Runs the agent and streams the reply. `ag-ui-langgraph`'s `add_langgraph_fastapi_endpoint`. |
-| `GET /agent?threadId=` | `{ messages, interrupts }`: the saved chat and any approval or browser tool still waiting. |
+| `GET /agent?threadId=` | `{ messages, interrupts }`: the saved chat and any approval still waiting. |
 | `DELETE /agent?threadId=` | Deletes the thread (the Delete chat button, and after an approved `delete_chat_history`). The page then removes the `chats` row. |
 | `GET /agent/health` | Health check. |
 
@@ -92,83 +92,6 @@ A waiting approval is saved by the checkpointer, so after a reload
 A denied call streams no result (the middleware answers without running the
 tool), so the page labels it "Not run" until a reload shows the reason.
 
-## Browser tools (`get_location`)
-
-Some tools need something only the browser has. The server declares the tool, but
-the page runs it:
-
-1. Gemini calls `get_location`, and the user approves it (see above). It asks every
-   time, because a web page the agent reads could tell it to send the location
-   somewhere through `read_webpage`.
-2. The tool calls LangGraph's `interrupt({ type: "browser_tool", name, tool_call_id })`.
-   The run ends with `RUN_FINISHED` outcome `interrupt`, the same as an approval.
-3. `useAgentChat` sees `browser_tool`, runs the tool from `BROWSER_TOOLS` in
-   `lib/browser-tools.ts`, and starts a new run with the result in `resume`.
-4. LangGraph starts the tool function again and `interrupt()` returns that result,
-   which becomes the tool's output. Anything above `interrupt()` runs twice, so keep
-   side effects below it.
-
-A tool that fails or gets no answer in 30 seconds returns `{ error }`, so the model
-can ask the user instead of the reply failing. A waiting tool is saved like an
-approval, so a reload runs it again.
-
-The location is rounded to about 1 km in the browser, because it is saved with the
-chat and sent to the model. The result comes from the browser, so it can be faked:
-never use it for anything that needs to be true, like permissions or prices.
-
-To add one: write the function in `BROWSER_TOOLS`, and a `@tool` in `tools.py` that
-calls `_ask_browser()` the same way.
-
-## Files on the user's computer (`open_csv`, `query_csv`)
-
-Two browser tools that work together, so the agent can answer questions about a
-file it never receives:
-
-1. `open_csv` needs a click, because browsers only open a file picker from one. So
-   the hook does not run it (`needsUser` in `lib/browser-tools.ts`): the page shows
-   a card (`CsvPicker`), and picking a file or pressing Cancel answers the interrupt.
-2. The browser reads the file (`lib/csv.ts`, up to 50 MB) and keeps it in memory for
-   that chat. The model gets only the column names and stats and the first 3 rows.
-3. `query_csv(op, metric, group_by, filter_column, filter_value, limit)` runs in the
-   browser on that file. The arguments come from the model, carried in the interrupt.
-   The page draws the result as bars (`CsvBars`), and the model gets the numbers.
-
-Picking the file is the consent for the summary. Each `query_csv` asks for approval,
-with a question built from its arguments (`describe_csv_query` in `agent.py`), for the
-same reason as `get_location`: a web page could tell the agent to send results out.
-
-The 3 sample rows and the results still go to the model and are saved with the chat,
-so this is not private for a file where any one row is secret. The cells could also
-hold instructions aimed at the agent, so treat them like web pages.
-
-A reload forgets the file. The next `query_csv` returns an error telling the model
-to call `open_csv` again.
-
-## Folders on the user's computer (`open_folder`, `read_files`, `write_file`)
-
-The agent can read and change real files, through the browser's File System Access
-API (`lib/folder.ts`). This works only in Chrome, Edge and other Chromium browsers.
-The browser only checks that a path is inside the picked folder, and it has no undo,
-so every other rule here is ours:
-
-| Rule | Why |
-|---|---|
-| The user picks the folder with a click (`FolderPicker`) | Browsers require it |
-| `.env`, keys, `credentials*`, `.git`, `node_modules` and the like are never listed, read or written | What the agent reads goes to the model provider. This holds even if the user approves the read |
-| `read_files` needs approval, naming each file, at most 5 per call | A web page or a file could tell the agent to send something out |
-| Files are read whole or not at all (200 KB limit) | An agent that saw half a file and wrote it back would destroy the other half |
-| `write_file` writes only from the Apply button in a card showing the diff (`WriteReview`) | The agent has no way to write by itself |
-| A file must have been read before it is changed, and must not have changed since, checked again on Apply | So the user's own edits are never overwritten |
-| The old version is copied to `.agent-backups/<time>/` first; if that fails, nothing is written | There is no other undo |
-| There is no delete tool | Nothing asks for it yet, and it is the easiest way to lose data |
-
-A write goes through `createWritable()`, which changes the real file only on
-`close()`, so a crash midway leaves the original whole.
-
-The backups stay in the folder until the user removes them, and restoring one is by
-hand. Whole files go to the model and are saved with the chat in Postgres. A reload
-forgets the folder, so the agent has to ask for it again.
-
 ## Web search (`web_search`, `read_webpage`)
 
 Two tools that work together, so the agent researches instead of answering
@@ -198,10 +121,9 @@ today's date. Without it Gemini trusted its training: asked for the latest
 Python, it searched, then answered with a release two years old.
 
 Web pages are untrusted text: a page could contain instructions aimed at the
-agent. Here the worst case is a wrong answer (the tools with side effects or
-private data, `delete_chat_history`, `get_location`, `query_csv`, `read_files` and
-`write_file`, ask the user first), but keep that in mind before giving the agent
-tools that act.
+agent. Here the worst case is a wrong answer (the one tool with a side effect,
+`delete_chat_history`, asks the user first), but keep that in mind before giving
+the agent tools that act.
 
 ## Its name
 

@@ -3,10 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { FolderPicker, WriteReview } from "@/components/folder-cards";
 import { deleteChat, touchChat } from "@/lib/actions";
-import { needsUser, openCsv, type BrowserToolResult } from "@/lib/browser-tools";
-import type { CsvResult } from "@/lib/csv";
 import {
 	THINKING_LEVELS,
 	useAgentChat,
@@ -53,7 +50,6 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	const {
 		messages,
 		approvals,
-		browserCalls,
 		context,
 		loading,
 		running,
@@ -61,15 +57,14 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		error,
 		send,
 		answer,
-		finishBrowserCall,
 		stop,
 		clear,
 	} = useAgentChat({
 		url: AGENT_URL,
 		threadId,
 	});
-	// The run is paused until the user or the browser answers: a new message would not fit.
-	const paused = approvals.length > 0 || browserCalls.length > 0;
+	// The run is paused until the user answers: a new message would not fit.
+	const paused = approvals.length > 0;
 
 	// Follow the reply as it streams, but only while the user is at the bottom:
 	// scrolling up to read stops the following.
@@ -78,7 +73,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	useEffect(() => {
 		const el = scroller.current;
 		if (el && atBottom.current) el.scrollTo({ top: el.scrollHeight });
-	}, [messages, thinking, approvals, browserCalls, loading]);
+	}, [messages, thinking, approvals, loading]);
 
 	// The thread first: if that fails, the chat stays in the list.
 	async function removeChat() {
@@ -180,7 +175,6 @@ export function AgentChat({ threadId }: { threadId: string }) {
 							streaming={running && message === last}
 							latest={message === last}
 							waiting={approvals.map((a) => a.toolCallId)}
-							inBrowser={browserCalls.map((c) => c.toolCallId)}
 						/>
 					),
 				)}
@@ -212,61 +206,12 @@ export function AgentChat({ threadId }: { threadId: string }) {
 					</div>
 				)}
 
-				{browserCalls
-					.filter((call) => needsUser(call.name))
-					.map((call) => {
-						const onDone = (result: BrowserToolResult) => finishBrowserCall(call.id, result);
-						if (call.name === "open_folder") return <FolderPicker key={call.id} threadId={threadId} onDone={onDone} />;
-						if (call.name === "write_file")
-							return <WriteReview key={call.id} threadId={threadId} args={call.args} onDone={onDone} />;
-						return <CsvPicker key={call.id} threadId={threadId} onDone={onDone} />;
-					})}
-
 				{error && <p className="text-sm text-red-600">{error.message}</p>}
 			</div>
 
 			<div className="pb-3">
 				{composer}
 				<p className="pt-2 text-center text-xs text-zinc-500">The agent can make mistakes. Check important info.</p>
-			</div>
-		</div>
-	);
-}
-
-// open_csv's card. Browsers only open a file picker from a real click, so the agent
-// cannot do it for the user. Picking the file is also what agrees to sharing its summary.
-function CsvPicker({ threadId, onDone }: { threadId: string; onDone: (result: BrowserToolResult) => void }) {
-	const [reading, setReading] = useState(false);
-	return (
-		<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-2xl bg-zinc-100 py-2.5 pr-2.5 pl-4 dark:bg-zinc-900">
-			<div className="min-w-0 text-sm">
-				<p>Choose a CSV file for the agent</p>
-				<p className="text-xs text-zinc-500">It stays in this browser. The agent sees a summary and 3 rows.</p>
-			</div>
-			<div className="flex shrink-0 items-center gap-1.5">
-				<button
-					type="button"
-					disabled={reading}
-					onClick={() => onDone({ error: "The user did not choose a file." })}
-					className="rounded-full px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-200 disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-zinc-800">
-					Cancel
-				</button>
-				<label
-					className={`cursor-pointer rounded-full bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 has-disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300`}>
-					{reading ? "Reading…" : "Choose file"}
-					<input
-						type="file"
-						accept=".csv,text/csv"
-						disabled={reading}
-						className="sr-only"
-						onChange={async (e) => {
-							const file = e.target.files?.[0];
-							if (!file) return;
-							setReading(true);
-							onDone(await openCsv(threadId, file));
-						}}
-					/>
-				</label>
 			</div>
 		</div>
 	);
@@ -401,18 +346,16 @@ function AssistantMessage({
 	streaming,
 	latest,
 	waiting,
-	inBrowser,
 }: {
 	message: ChatMessage;
 	streaming: boolean;
 	latest: boolean;
 	waiting: string[];
-	inBrowser: string[];
 }) {
 	const text = message.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n");
 	const lastPart = message.parts.at(-1);
 	// The reply is not over while a tool waits, so its totals would be early.
-	const paused = message.parts.some((p) => waiting.includes(p.id) || inBrowser.includes(p.id));
+	const paused = message.parts.some((p) => waiting.includes(p.id));
 	return (
 		<div className="group/reply flex flex-col gap-3 leading-7">
 			{message.parts.map((part) => {
@@ -429,7 +372,7 @@ function AssistantMessage({
 						key={part.id}
 						part={part}
 						waiting={waiting.includes(part.id)}
-						running={streaming || inBrowser.includes(part.id)}
+						running={streaming}
 					/>
 				);
 			})}
@@ -486,26 +429,16 @@ function ToolCall({
 	// These tools get a sentence instead of their name and raw output.
 	const plain = plainToolView(part, running);
 	if (plain) {
-		const hasMore = plain.detail || plain.results;
 		return (
-			<details className="group" open={plain.results ? true : undefined}>
+			<details className="group">
 				<summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 [&::-webkit-details-marker]:hidden">
-					{part.name === "get_location" ? (
-						<PinIcon />
-					) : part.name === "get_weather" ? (
-						<CloudIcon />
-					) : part.name.endsWith("_csv") ? (
-						<TableIcon />
-					) : (
-						<FolderIcon />
-					)}
+					<CloudIcon />
 					<span className={plain.active ? "animate-pulse" : undefined}>{plain.label}</span>
-					{hasMore && <ChevronIcon />}
+					{plain.detail && <ChevronIcon />}
 				</summary>
 				{plain.detail && (
 					<p className="mt-2 border-l-2 border-zinc-200 pl-4 text-sm text-zinc-500 dark:border-zinc-700">{plain.detail}</p>
 				)}
-				{plain.results && <CsvBars result={plain.results} />}
 			</details>
 		);
 	}
@@ -558,101 +491,12 @@ function ToolCall({
 	);
 }
 
-// A query_csv result as a bar per group, drawn here from the numbers the tool returned.
-function CsvBars({ result }: { result: CsvResult }) {
-	const largest = Math.max(...result.results.map((r) => Math.abs(r.value)), 1);
-	return (
-		<div className="mt-2 flex flex-col gap-1.5 border-l-2 border-zinc-200 pl-4 text-sm dark:border-zinc-700">
-			{result.results.map((row) => (
-				<div key={row.group} className="grid grid-cols-[7rem_minmax(0,1fr)_6rem] items-center gap-3">
-					<span className="truncate text-zinc-500" title={row.group}>
-						{row.group}
-					</span>
-					<span className="h-1.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
-						<span
-							style={{ width: `${(Math.abs(row.value) / largest) * 100}%` }}
-							className="block h-full rounded-full bg-zinc-500"
-						/>
-					</span>
-					<span className="text-right font-mono text-xs tabular-nums">{row.value.toLocaleString()}</span>
-				</div>
-			))}
-			{result.total_groups > result.results.length && (
-				<p className="text-xs text-zinc-500">
-					Top {result.results.length} of {result.total_groups}
-				</p>
-			)}
-		</div>
-	);
-}
-
 // A sentence for the tools below (agent-server/tools.py). null for any other tool.
 // A denied call streams no result; a reload shows the reason.
 function plainToolView(
 	part: Extract<Part, { type: "tool" }>,
 	running: boolean,
-): { label: string; detail?: string; active?: boolean; results?: CsvResult } | null {
-	if (part.name === "open_folder") {
-		if (part.result === undefined)
-			return running ? { label: "Waiting for a folder", active: true } : { label: "No folder opened" };
-		const opened = parseJson<{ folder?: string; files?: unknown[]; hidden?: number; error?: string }>(part.result);
-		if (!opened || opened.error) return { label: "No folder opened", detail: opened?.error };
-		return {
-			label: `Opened ${opened.folder} · ${opened.files?.length} files`,
-			detail: opened.hidden ? `${opened.hidden} hidden: secrets and generated folders` : undefined,
-		};
-	}
-	if (part.name === "read_files") {
-		const { paths } = parseJson<{ paths?: string[] }>(part.args) ?? {};
-		const count = paths?.length ?? 0;
-		const files = count === 1 ? "1 file" : `${count} files`;
-		if (part.result === undefined)
-			return running ? { label: `Reading ${files}`, active: true } : { label: `Did not read ${files}` };
-		const read = parseJson<{ files?: { path: string; error?: string }[]; error?: string }>(part.result);
-		if (!read?.files) return { label: `Could not read ${files}`, detail: read?.error };
-		const worked = read.files.filter((f) => !f.error).length;
-		return {
-			label: worked === 0 ? `Could not read ${files}` : `Read ${worked === 1 ? "1 file" : `${worked} files`}`,
-			detail: read.files.map((f) => (f.error ? `${f.path} (${f.error})` : f.path)).join(", "),
-		};
-	}
-	if (part.name === "write_file") {
-		const { path } = parseJson<{ path?: string }>(part.args) ?? {};
-		if (part.result === undefined)
-			return running ? { label: `Waiting for your review of ${path}`, active: true } : { label: `Did not change ${path}` };
-		const written = parseJson<{ created?: boolean; backup?: string | null; error?: string }>(part.result);
-		if (!written || written.error) return { label: `Did not change ${path}`, detail: written?.error };
-		return {
-			label: `${written.created ? "Created" : "Changed"} ${path}`,
-			detail: written.backup ? `Old version saved at ${written.backup}` : undefined,
-		};
-	}
-	if (part.name === "open_csv") {
-		if (part.result === undefined)
-			return running ? { label: "Waiting for a file", active: true } : { label: "No file opened" };
-		const file = parseJson<{ file?: string; rows?: number; columns?: { name: string }[]; error?: string }>(part.result);
-		if (!file || file.error) return { label: "No file opened", detail: file?.error };
-		return {
-			label: `Opened ${file.file} · ${file.rows?.toLocaleString()} rows`,
-			detail: `Columns: ${file.columns?.map((c) => c.name).join(", ")}`,
-		};
-	}
-	if (part.name === "query_csv") {
-		const { op, metric, group_by } = parseJson<Partial<CsvResult>>(part.args) ?? {};
-		const what = `${op ?? "calculation"}${metric ? ` of ${metric}` : ""}${group_by ? ` by ${group_by}` : ""}`;
-		if (part.result === undefined)
-			return running ? { label: `Calculating ${what}`, active: true } : { label: `Did not calculate ${what}` };
-		const result = parseJson<CsvResult & { error?: string }>(part.result);
-		if (!result || result.error) return { label: `Could not calculate ${what}`, detail: result?.error };
-		return { label: `Calculated ${what}`, results: result };
-	}
-	if (part.name === "get_location") {
-		if (part.result === undefined)
-			return running ? { label: "Getting your location", active: true } : { label: "Location not shared" };
-		const place = parseJson<{ latitude?: number; longitude?: number; error?: string }>(part.result);
-		if (!place || place.error) return { label: "Could not get your location", detail: place?.error };
-		return { label: "Used your approximate location", detail: `Near ${place.latitude}, ${place.longitude}` };
-	}
+): { label: string; detail?: string; active?: boolean } | null {
 	if (part.name === "get_weather") {
 		const { city } = parseJson<{ city?: string | null }>(part.args) ?? {};
 		const where = city ? ` in ${city}` : "";
@@ -751,32 +595,6 @@ function GlobeIcon() {
 		<svg {...icon} width={14} height={14}>
 			<circle cx="12" cy="12" r="9" />
 			<path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
-		</svg>
-	);
-}
-
-function FolderIcon() {
-	return (
-		<svg {...icon} width={14} height={14}>
-			<path d="M3 6a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-		</svg>
-	);
-}
-
-function TableIcon() {
-	return (
-		<svg {...icon} width={14} height={14}>
-			<rect x="3" y="4" width="18" height="16" rx="2" />
-			<path d="M3 10h18M3 15h18M9 4v16" />
-		</svg>
-	);
-}
-
-function PinIcon() {
-	return (
-		<svg {...icon} width={14} height={14}>
-			<path d="M12 21s7-6.1 7-11a7 7 0 0 0-14 0c0 4.9 7 11 7 11z" />
-			<circle cx="12" cy="10" r="2.5" />
 		</svg>
 	);
 }
