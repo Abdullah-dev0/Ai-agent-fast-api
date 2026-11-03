@@ -35,7 +35,7 @@ export async function newChat() {
 	if (!id) {
 		id = crypto.randomUUID();
 		await pool.query("INSERT INTO chats (id, user_id) VALUES ($1, $2)", [id, user.id]);
-		revalidatePath("/agent", "layout");
+		revalidatePath("/", "layout");
 	}
 	redirect(`/agent/${id}`);
 }
@@ -47,13 +47,13 @@ export async function touchChat(id: string, text: string) {
 		"UPDATE chats SET title = COALESCE(title, $1), updated_at = now() WHERE id = $2 AND user_id = $3",
 		[text.slice(0, 60), id, user.id],
 	);
-	revalidatePath("/agent", "layout");
+	revalidatePath("/", "layout");
 }
 
 /** Removes the chat from the list. The caller has already deleted its thread (DELETE /agent). */
 export async function deleteChat(id: string) {
 	const user = await requireUser();
 	await pool.query("DELETE FROM chats WHERE id = $1 AND user_id = $2", [id, user.id]);
-	revalidatePath("/agent", "layout");
+	revalidatePath("/", "layout");
 	redirect("/agent");
 }

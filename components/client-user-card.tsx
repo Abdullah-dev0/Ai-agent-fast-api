@@ -8,12 +8,12 @@ export function ClientUserCard() {
   const user = useUser();
   if (!user) return null;
   return (
-    <dl className="grid grid-cols-[8rem_1fr] gap-y-2 text-sm">
-      <dt className="text-zinc-500">Name</dt>
+    <dl className="grid grid-cols-[6rem_1fr] gap-y-3 text-sm sm:grid-cols-[8rem_1fr]">
+      <dt className="text-muted">Name</dt>
       <dd>{user.name}</dd>
-      <dt className="text-zinc-500">Email</dt>
-      <dd>{user.email}</dd>
-      <dt className="text-zinc-500">User ID</dt>
+      <dt className="text-muted">Email</dt>
+      <dd className="break-all">{user.email}</dd>
+      <dt className="text-muted">User ID</dt>
       <dd className="font-mono text-xs break-all">{user.id}</dd>
     </dl>
   );

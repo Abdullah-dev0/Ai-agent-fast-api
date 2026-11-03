@@ -29,16 +29,16 @@ function savedThinking(): ThinkingLevel {
 
 // Markdown styles, applied to the rendered elements inside one wrapper.
 const MARKDOWN =
-	"[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_p]:my-3 [&_strong]:font-semibold [&_a]:underline " +
+	"[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_p]:my-4 [&_strong]:font-semibold [&_a]:underline [&_a]:underline-offset-2 " +
 	"[&_h1]:mt-6 [&_h1]:mb-3 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mt-6 [&_h2]:mb-3 [&_h2]:text-xl [&_h2]:font-semibold " +
 	"[&_h3]:mt-5 [&_h3]:mb-2 [&_h3]:text-lg [&_h3]:font-semibold " +
-	"[&_ul]:my-3 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-3 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-1 " +
-	"[&_hr]:my-6 [&_hr]:border-zinc-200 dark:[&_hr]:border-zinc-800 " +
-	"[&_blockquote]:border-l-2 [&_blockquote]:border-zinc-300 [&_blockquote]:pl-4 [&_blockquote]:text-zinc-600 dark:[&_blockquote]:border-zinc-700 dark:[&_blockquote]:text-zinc-400 " +
-	"[&_code]:rounded-md [&_code]:bg-zinc-100 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.875em] dark:[&_code]:bg-zinc-800 " +
-	"[&_pre]:my-4 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-zinc-100 [&_pre]:p-4 dark:[&_pre]:bg-zinc-900 [&_pre_code]:bg-transparent [&_pre_code]:p-0 " +
-	"[&_table]:my-4 [&_table]:w-full [&_table]:text-sm [&_th]:border-b [&_th]:border-zinc-200 [&_th]:py-2 [&_th]:pr-4 [&_th]:text-left [&_th]:font-semibold " +
-	"[&_td]:border-b [&_td]:border-zinc-100 [&_td]:py-2 [&_td]:pr-4 dark:[&_th]:border-zinc-700 dark:[&_td]:border-zinc-800";
+	"[&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-1.5 [&_li]:pl-1 [&_li::marker]:text-muted " +
+	"[&_hr]:my-6 [&_hr]:border-line " +
+	"[&_blockquote]:border-l-2 [&_blockquote]:border-line [&_blockquote]:pl-4 [&_blockquote]:text-muted " +
+	"[&_code]:rounded-md [&_code]:bg-surface [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.875em] " +
+	"[&_pre]:my-4 [&_pre]:overflow-x-auto [&_pre]:rounded-2xl [&_pre]:bg-code [&_pre]:p-4 [&_pre]:text-sm [&_pre]:leading-6 [&_pre_code]:bg-transparent [&_pre_code]:p-0 " +
+	"[&_table]:my-4 [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_table]:text-sm [&_th]:border-b [&_th]:border-line [&_th]:py-2 [&_th]:pr-4 [&_th]:text-left [&_th]:font-semibold " +
+	"[&_td]:border-b [&_td]:border-line [&_td]:py-2 [&_td]:pr-4";
 
 // The chat UI for the Python agent server. All the talking to the server
 // (streaming, approvals, history, stop) is in useAgentChat.
@@ -126,92 +126,94 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		/>
 	);
 
-	if (loading) return <p className="animate-pulse pt-10 text-sm text-zinc-500">Loading chat…</p>;
+	if (loading) return <p className="animate-pulse pt-16 text-center text-sm text-muted">Loading chat…</p>;
 
 	if (messages.length === 0 && !running)
 		return (
-			<div className="flex flex-1 flex-col items-center justify-center gap-8">
-				<h2 className="text-3xl font-semibold tracking-tight">What can I help with?</h2>
+			<div className="mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center gap-8 px-4">
+				<h2 className="text-center text-3xl font-semibold tracking-tight">What can I help with?</h2>
 				<div className="w-full">{composer}</div>
-				{error && <p className="text-sm text-red-600">{error.message}</p>}
+				{error && <p className="text-sm text-danger">{error.message}</p>}
 			</div>
 		);
 
 	const last = messages.at(-1);
 	return (
-		<div className="flex min-h-0 flex-1 flex-col">
-			<div className="flex items-center justify-end gap-3 pt-3">
+		<div className="flex h-full min-h-0 flex-col">
+			<div className="flex h-12 shrink-0 items-center justify-end gap-3 px-3 max-md:pl-14">
 				{context && <ContextMeter context={context} />}
 				<button
 					type="button"
 					onClick={confirmDelete}
 					// A streaming reply would save itself back after the delete.
 					disabled={deleting || running}
-					className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
+					className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted hover:bg-hover hover:text-foreground disabled:opacity-50">
 					<TrashIcon />
 					{deleting ? "Deleting…" : "Delete chat"}
 				</button>
 			</div>
 
-			{/* Only the messages scroll, with no visible scrollbar. */}
+			{/* Only the messages scroll. */}
 			<div
 				ref={scroller}
 				onScroll={(e) => {
 					const el = e.currentTarget;
 					atBottom.current = el.clientHeight + el.scrollTop >= el.scrollHeight - 120;
 				}}
-				className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto pt-4 pb-8 scrollbar-none *:shrink-0">
-				{messages.map((message) =>
-					message.role === "user" ? (
-						<div
-							key={message.id}
-							className="max-w-[75%] self-end rounded-3xl bg-zinc-100 px-5 py-2.5 whitespace-pre-wrap dark:bg-zinc-800">
-							{message.parts.map((p) => (p.type === "text" ? p.text : null))}
-						</div>
-					) : (
-						<AssistantMessage
-							key={message.id}
-							message={message}
-							streaming={running && message === last}
-							latest={message === last}
-							waiting={approvals.map((a) => a.toolCallId)}
-						/>
-					),
-				)}
-				{thinking && <span className="size-3.5 animate-pulse rounded-full bg-zinc-900 dark:bg-zinc-100" />}
+				className="min-h-0 flex-1 overflow-y-auto">
+				<div className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-4 pt-4 pb-8">
+					{messages.map((message) =>
+						message.role === "user" ? (
+							<div
+								key={message.id}
+								className="max-w-[85%] self-end rounded-3xl bg-surface px-5 py-2.5 break-words whitespace-pre-wrap sm:max-w-[75%]">
+								{message.parts.map((p) => (p.type === "text" ? p.text : null))}
+							</div>
+						) : (
+							<AssistantMessage
+								key={message.id}
+								message={message}
+								streaming={running && message === last}
+								latest={message === last}
+								waiting={approvals.map((a) => a.toolCallId)}
+							/>
+						),
+					)}
+					{thinking && <span className="size-3.5 animate-pulse rounded-full bg-foreground" />}
 
-				{approvals.length > 0 && (
-					<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-2xl bg-zinc-100 py-2.5 pr-2.5 pl-4 dark:bg-zinc-900">
-						<div className="min-w-0 text-sm">
-							{approvals.map((approval) => (
-								<p key={approval.id}>{approval.description || "The agent needs your approval to continue."}</p>
-							))}
+					{approvals.length > 0 && (
+						<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 rounded-2xl bg-surface p-3 pl-4">
+							<div className="min-w-0 text-sm">
+								{approvals.map((approval) => (
+									<p key={approval.id}>{approval.description || "The agent needs your approval to continue."}</p>
+								))}
+							</div>
+							<div className="flex shrink-0 gap-2">
+								<button
+									type="button"
+									onClick={() => decide(false)}
+									disabled={answering}
+									className="rounded-full bg-hover px-4 py-1.5 text-sm hover:opacity-80 disabled:opacity-50">
+									Deny
+								</button>
+								<button
+									type="button"
+									onClick={() => decide(true)}
+									disabled={answering}
+									className="rounded-full bg-foreground px-4 py-1.5 text-sm font-medium text-background hover:opacity-85 disabled:opacity-50">
+									Approve
+								</button>
+							</div>
 						</div>
-						<div className="flex shrink-0 gap-1.5">
-							<button
-								type="button"
-								onClick={() => decide(false)}
-								disabled={answering}
-								className="rounded-full px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-200 disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-zinc-800">
-								Deny
-							</button>
-							<button
-								type="button"
-								onClick={() => decide(true)}
-								disabled={answering}
-								className="rounded-full bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300">
-								Approve
-							</button>
-						</div>
-					</div>
-				)}
+					)}
 
-				{error && <p className="text-sm text-red-600">{error.message}</p>}
+					{error && <p className="text-sm text-danger">{error.message}</p>}
+				</div>
 			</div>
 
-			<div className="pb-3">
+			<div className="mx-auto w-full max-w-3xl shrink-0 px-4 pb-3">
 				{composer}
-				<p className="pt-2 text-center text-xs text-zinc-500">The agent can make mistakes. Check important info.</p>
+				<p className="pt-2 text-center text-xs text-muted">The agent can make mistakes. Check important info.</p>
 			</div>
 		</div>
 	);
@@ -242,12 +244,12 @@ function ContextMeter({ context: { used, limit } }: { context: ContextUsage }) {
 	return (
 		<span
 			title="How much of the model's memory for this chat is used. A new chat starts empty."
-			className="flex items-center gap-2 text-xs text-zinc-500">
+			className="flex items-center gap-2 text-xs text-muted">
 			{percent !== null && (
-				<span className="h-1.5 w-16 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+				<span className="h-1.5 w-16 overflow-hidden rounded-full bg-surface">
 					<span
 						style={{ width: `${Math.min(percent, 100)}%` }}
-						className={`block h-full rounded-full ${percent >= 80 ? "bg-red-600" : "bg-zinc-500"}`}
+						className={`block h-full rounded-full ${percent >= 80 ? "bg-danger" : "bg-muted"}`}
 					/>
 				</span>
 			)}
@@ -292,7 +294,7 @@ function Composer({
 				e.preventDefault();
 				onSubmit();
 			}}
-			className="flex items-end gap-2 rounded-[28px] border border-zinc-200 bg-white p-2 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+			className="flex items-end gap-2 rounded-[28px] border border-line bg-composer p-2 shadow-[0_2px_12px_rgb(0_0_0/0.06)]">
 			<textarea
 				ref={ref}
 				rows={1}
@@ -306,13 +308,13 @@ function Composer({
 					}
 				}}
 				placeholder={disabled && !running ? "Answer the question above first" : "Ask anything"}
-				className="max-h-52 flex-1 resize-none bg-transparent px-3 py-2 outline-none placeholder:text-zinc-500"
+				className="max-h-52 min-w-0 flex-1 resize-none bg-transparent px-3 py-2 outline-none placeholder:text-muted"
 			/>
 			<select
 				aria-label="Thinking level"
 				value={thinkingLevel}
 				onChange={(e) => onThinkingLevelChange(e.target.value as ThinkingLevel)}
-				className="h-9 shrink-0 cursor-pointer rounded-full bg-transparent px-2 text-sm text-zinc-500 outline-none hover:text-zinc-900 dark:bg-zinc-900 dark:hover:text-zinc-100">
+				className="h-9 shrink-0 cursor-pointer rounded-full bg-transparent px-2 text-sm text-muted outline-none hover:bg-hover hover:text-foreground">
 				{THINKING_LEVELS.map((level) => (
 					<option key={level} value={level}>
 						Thinking: {level}
@@ -325,7 +327,7 @@ function Composer({
 					// Closes the request, which also stops the reply on the server.
 					onClick={onStop}
 					aria-label="Stop"
-					className="flex size-9 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900">
+					className="flex size-9 shrink-0 items-center justify-center rounded-full bg-foreground text-background">
 					<span className="size-3 rounded-[3px] bg-current" />
 				</button>
 			) : (
@@ -333,7 +335,7 @@ function Composer({
 					type="submit"
 					aria-label="Send"
 					disabled={!value.trim() || disabled}
-					className="flex size-9 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-white disabled:opacity-30 dark:bg-zinc-100 dark:text-zinc-900">
+					className="flex size-9 shrink-0 items-center justify-center rounded-full bg-foreground text-background disabled:opacity-30">
 					<ArrowUpIcon />
 				</button>
 			)}
@@ -389,7 +391,7 @@ function AssistantMessage({
 						</div>
 					)}
 					{message.usage && (
-						<span title="Tokens used for this reply" className="text-xs text-zinc-500">
+						<span title="Tokens used for this reply" className="text-xs text-muted">
 							{message.usage.input.toLocaleString()} input · {message.usage.output.toLocaleString()} output tokens
 						</span>
 					)}
@@ -403,11 +405,11 @@ function AssistantMessage({
 function Reasoning({ part, active }: { part: Extract<Part, { type: "reasoning" }>; active: boolean }) {
 	return (
 		<details className="group">
-			<summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 [&::-webkit-details-marker]:hidden">
+			<summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
 				<span className={active ? "animate-pulse" : undefined}>{active ? "Thinking" : "Thought"}</span>
 				<ChevronIcon />
 			</summary>
-			<div className={`mt-2 border-l-2 border-zinc-200 pl-4 text-sm text-zinc-500 dark:border-zinc-700 ${MARKDOWN}`}>
+			<div className={`mt-2 border-l-2 border-line pl-4 text-sm text-muted ${MARKDOWN}`}>
 				<MarkdownText text={part.text} />
 			</div>
 		</details>
@@ -431,13 +433,13 @@ function ToolCall({
 	if (plain) {
 		return (
 			<details className="group">
-				<summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 [&::-webkit-details-marker]:hidden">
+				<summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
 					<CloudIcon />
 					<span className={plain.active ? "animate-pulse" : undefined}>{plain.label}</span>
 					{plain.detail && <ChevronIcon />}
 				</summary>
 				{plain.detail && (
-					<p className="mt-2 border-l-2 border-zinc-200 pl-4 text-sm text-zinc-500 dark:border-zinc-700">{plain.detail}</p>
+					<p className="mt-2 border-l-2 border-line pl-4 text-sm text-muted">{plain.detail}</p>
 				)}
 			</details>
 		);
@@ -449,19 +451,19 @@ function ToolCall({
 		const pending = part.result === undefined;
 		return (
 			<details className="group">
-				<summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 [&::-webkit-details-marker]:hidden">
+				<summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
 					<GlobeIcon />
 					<span className={pending && running ? "animate-pulse" : undefined}>{web.label}</span>
 					<ChevronIcon />
 				</summary>
 				{web.sources.length > 0 && (
-					<ul className="mt-2 flex flex-col gap-1 border-l-2 border-zinc-200 pl-4 text-sm dark:border-zinc-700">
+					<ul className="mt-2 flex flex-col gap-1 border-l-2 border-line pl-4 text-sm">
 						{web.sources.map((s) => (
 							<li key={s.url} className="truncate">
 								<a href={s.url} target="_blank" rel="noreferrer" className="hover:underline">
 									{s.title || s.url}
 								</a>{" "}
-								<span className="text-zinc-500">{hostname(s.url)}</span>
+								<span className="text-muted">{hostname(s.url)}</span>
 							</li>
 						))}
 					</ul>
@@ -476,14 +478,14 @@ function ToolCall({
 	const hasInput = part.args && part.args !== "{}";
 	return (
 		<details className="group">
-			<summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 [&::-webkit-details-marker]:hidden">
+			<summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
 				<ToolIcon />
 				<span className={status === "Running" ? "animate-pulse" : undefined}>
 					{status} <span className="font-medium">{part.name}</span>
 				</span>
 				<ChevronIcon />
 			</summary>
-			<div className="mt-2 flex flex-col gap-2 rounded-xl bg-zinc-100 p-3 font-mono text-xs text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400">
+			<div className="mt-2 flex flex-col gap-2 rounded-xl bg-code p-3 font-mono text-xs break-words text-muted">
 				<span className="whitespace-pre-wrap">input: {hasInput ? part.args : "none"}</span>
 				{part.result !== undefined && <span className="whitespace-pre-wrap">output: {part.result}</span>}
 			</div>
@@ -556,7 +558,7 @@ function CopyButton({ text }: { text: string }) {
 				setCopied(true);
 				setTimeout(() => setCopied(false), 1500);
 			}}
-			className="flex size-8 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
+			className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-foreground">
 			{copied ? <CheckIcon /> : <CopyIcon />}
 		</button>
 	);

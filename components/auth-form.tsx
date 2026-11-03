@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { authClient } from "@/lib/auth-client";
+import { buttonPrimary, field } from "@/lib/ui";
+import { Logo } from "./logo";
 
-const input =
-  "w-full rounded-md border border-zinc-300 bg-transparent px-3 py-2 dark:border-zinc-700";
+const input = `${field} h-12 rounded-full px-5`;
 
 export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
   const router = useRouter();
@@ -37,33 +38,35 @@ export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
 
   return (
     <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center gap-6 px-4 py-16">
-      <h1 className="text-2xl font-semibold">{isSignUp ? "Create account" : "Sign in"}</h1>
-      <form onSubmit={onSubmit} className="flex flex-col gap-4 text-sm">
+      <Link href="/" aria-label="Home" className="self-center">
+        <Logo size={40} />
+      </Link>
+      <h1 className="text-center text-3xl font-semibold tracking-tight">
+        {isSignUp ? "Create your account" : "Welcome back"}
+      </h1>
+      <form onSubmit={onSubmit} className="flex flex-col gap-3 text-base">
         {isSignUp && (
-          <label>
-            <span className="mb-1 block text-zinc-500">Name</span>
-            <input name="name" required minLength={2} className={input} />
-          </label>
+          <input name="name" placeholder="Name" aria-label="Name" autoComplete="name" required minLength={2} className={input} />
         )}
-        <label>
-          <span className="mb-1 block text-zinc-500">Email</span>
-          <input name="email" type="email" required className={input} />
-        </label>
-        <label>
-          <span className="mb-1 block text-zinc-500">Password</span>
-          <input name="password" type="password" required minLength={8} className={input} />
-        </label>
-        {error && <p className="text-red-600">{error}</p>}
-        <button
-          disabled={pending}
-          className="rounded-md bg-zinc-900 px-4 py-2 font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
-        >
+        <input name="email" type="email" placeholder="Email address" aria-label="Email address" autoComplete="email" required className={input} />
+        <input
+          name="password"
+          type="password"
+          placeholder="Password"
+          aria-label="Password"
+          autoComplete={isSignUp ? "new-password" : "current-password"}
+          required
+          minLength={8}
+          className={input}
+        />
+        {error && <p className="px-2 text-sm text-danger">{error}</p>}
+        <button disabled={pending} className={`${buttonPrimary} h-12`}>
           {pending ? "Please wait..." : isSignUp ? "Sign up" : "Sign in"}
         </button>
       </form>
-      <p className="text-sm text-zinc-500">
+      <p className="text-center text-sm text-muted">
         {isSignUp ? "Already have an account? " : "No account yet? "}
-        <Link className="underline" href={isSignUp ? "/sign-in" : "/sign-up"}>
+        <Link className="text-foreground underline" href={isSignUp ? "/sign-in" : "/sign-up"}>
           {isSignUp ? "Sign in" : "Sign up"}
         </Link>
       </p>

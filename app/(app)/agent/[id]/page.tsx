@@ -16,7 +16,7 @@ async function UserChat({ params }: { params: Promise<{ id: string }> }) {
 // useAgentChat hook (lib/use-agent-chat.ts).
 export default function ChatPage({ params }: { params: Promise<{ id: string }> }) {
 	return (
-		<Suspense fallback={<p className="animate-pulse pt-10 text-sm text-zinc-500">Loading chat…</p>}>
+		<Suspense fallback={<p className="animate-pulse pt-16 text-center text-sm text-muted">Loading chat…</p>}>
 			<UserChat params={params} />
 		</Suspense>
 	);

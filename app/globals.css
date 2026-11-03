@@ -1,21 +1,50 @@
 @import "tailwindcss";
 
+/* ChatGPT-like palette: light by default, dark when the system asks for it. */
 :root {
+  color-scheme: light dark;
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #0d0d0d;
+  --muted: #6b6b6b;
+  --sidebar: #f9f9f9;
+  --surface: #f4f4f4;
+  --hover: #ececec;
+  --line: #ececec;
+  --composer: #ffffff;
+  --code: #f7f7f8;
+  --danger: #dc2626;
+  --success: #16a34a;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --color-muted: var(--muted);
+  --color-sidebar: var(--sidebar);
+  --color-surface: var(--surface);
+  --color-hover: var(--hover);
+  --color-line: var(--line);
+  --color-composer: var(--composer);
+  --color-code: var(--code);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #212121;
+    --foreground: #ececec;
+    --muted: #9b9b9b;
+    --sidebar: #181818;
+    --surface: #2f2f2f;
+    --hover: #2a2a2a;
+    --line: #2c2c2c;
+    --composer: #303030;
+    --code: #0d0d0d;
+    --danger: #f87171;
+    --success: #4ade80;
   }
 }
 
@@ -23,4 +52,25 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+}
+
+@layer base {
+  /* Thin scrollbars that match the theme. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--foreground) 20%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--foreground) 45%, transparent);
+    outline-offset: 2px;
+  }
+
+  code {
+    font-family: var(--font-mono);
+  }
 }
