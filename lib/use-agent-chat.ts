@@ -51,13 +51,13 @@ export type Approval = {
 // What paused the run: LangChain's approval request, which the adapter keeps in an
 // AG-UI interrupt's metadata.langgraph.raw (GET /agent returns the same shape). The
 // interrupt itself carries the id and toolCallId.
-type ApprovalRequest = { name: string; args: Record<string, unknown>; description: string };
+type ApprovalRequest = { type?: string; name: string; args: Record<string, unknown>; description: string };
 
 function toApprovals(interrupts: Interrupt[]): Approval[] {
 	return interrupts.flatMap((i) => {
 		const raw: ApprovalRequest | undefined = i.metadata?.langgraph?.raw;
-		if (!raw || !i.toolCallId) return [];
-		return [{ id: i.id, toolCallId: i.toolCallId, name: raw.name, args: raw.args, description: raw.description }];
+		if (raw?.type !== "tool_approval") return [];
+		return [{ id: i.id, toolCallId: i.toolCallId ?? "", name: raw.name, args: raw.args, description: raw.description }];
 	});
 }
 
