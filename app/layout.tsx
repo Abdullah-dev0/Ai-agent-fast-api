@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "User cache demo",
-  description: "getUser with React cache() and Better Auth",
+  title: "Aragon",
+  description: "An AI agent chat",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

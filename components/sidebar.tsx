@@ -12,6 +12,11 @@ async function UserChats() {
 	return <ChatList chats={await listChats(user.id)} />;
 }
 
+async function CurrentUserMenu() {
+	const { name, email } = await requireUser();
+	return <UserMenu name={name} email={email} />;
+}
+
 // Everything except the chats and the user is static, so the sidebar shows at once.
 export function Sidebar() {
 	return (
@@ -45,7 +50,7 @@ export function Sidebar() {
 			</div>
 			<div className="border-t border-line p-3">
 				<Suspense fallback={<UserMenuSkeleton />}>
-					<UserMenu />
+					<CurrentUserMenu />
 				</Suspense>
 			</div>
 		</>

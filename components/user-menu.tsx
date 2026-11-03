@@ -3,10 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
-import { useUser } from "./user-provider";
 
-export function UserMenu() {
-  const user = useUser();
+export function UserMenu({ name, email }: { name: string; email: string }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -26,11 +24,9 @@ export function UserMenu() {
     };
   }, [open]);
 
-  if (!user) return null;
-
   async function signOut() {
     await authClient.signOut();
-    router.push("/");
+    router.push("/sign-in");
     router.refresh();
   }
 
@@ -40,7 +36,7 @@ export function UserMenu() {
         <div
           role="menu"
           className="absolute right-0 bottom-full left-0 mb-2 overflow-hidden rounded-xl border border-line bg-background p-1.5 text-sm shadow-lg">
-          <p className="truncate px-3 py-2 text-muted">{user.email}</p>
+          <p className="truncate px-3 py-2 text-muted">{email}</p>
           <button
             role="menuitem"
             onClick={signOut}
@@ -58,9 +54,9 @@ export function UserMenu() {
         onClick={() => setOpen(!open)}
         className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left text-sm hover:bg-hover">
         <span className="grid size-8 shrink-0 place-items-center rounded-full bg-foreground text-sm font-medium text-background">
-          {user.name.charAt(0).toUpperCase()}
+          {name.charAt(0).toUpperCase()}
         </span>
-        <span className="min-w-0 flex-1 truncate font-medium">{user.name}</span>
+        <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
       </button>
     </div>
   );

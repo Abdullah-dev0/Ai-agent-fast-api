@@ -1,4 +1,4 @@
-// The column the dashboard, profile and settings pages sit in. On small screens
+// The column the usage page sits in. On small screens
 // the top gap leaves room for the sidebar button.
 export function PageContainer({ title, children }: { title: string; children: React.ReactNode }) {
 	return (

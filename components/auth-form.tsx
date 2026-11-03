@@ -32,15 +32,15 @@ export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
       setPending(false);
       return;
     }
-    router.push("/dashboard");
+    router.push("/agent");
     router.refresh();
   }
 
   return (
     <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center gap-6 px-4 py-16">
-      <Link href="/" aria-label="Home" className="self-center">
+      <span className="self-center">
         <Logo size={40} />
-      </Link>
+      </span>
       <h1 className="text-center text-3xl font-semibold tracking-tight">
         {isSignUp ? "Create your account" : "Welcome back"}
       </h1>
