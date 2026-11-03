@@ -10,7 +10,7 @@ import {
 	type ResumeEntry,
 	type TokenUsage,
 } from "@ag-ui/core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 // Our own chat hook for the Python agent server (agent-server/main.py).
 // The server streams AG-UI events (https://docs.ag-ui.com); @ag-ui/client's
@@ -133,7 +133,7 @@ function forgetThread(agent: HttpAgent) {
 export function useAgentChat({ url, threadId }: { url: string; threadId: string }) {
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	// What the run is paused on, as AG-UI sent it.
-	const [interrupts, setInterruptsState] = useState<Interrupt[]>([]);
+	const [interrupts, setInterrupts] = useState<Interrupt[]>([]);
 	const [context, setContext] = useState<ContextUsage | null>(null);
 	const [loading, setLoading] = useState(true); // loading the saved chat
 	const [running, setRunning] = useState(false); // a reply is streaming
@@ -142,11 +142,6 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	// One agent per chat. Its own message list is only what the next run sends;
 	// the page builds the messages it shows from the events.
 	const agent = useMemo(() => new HttpAgent({ url, threadId }), [url, threadId]);
-	const interruptsRef = useRef<Interrupt[]>([]);
-	const setInterrupts = useCallback((next: Interrupt[]) => {
-		interruptsRef.current = next;
-		setInterruptsState(next);
-	}, []);
 	const approvals = useMemo(() => toApprovals(interrupts), [interrupts]);
 
 	// The saved chat and any approval still waiting (GET /agent in main.py).
@@ -170,22 +165,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 				if (!controller.signal.aborted) setLoading(false);
 			});
 		return () => controller.abort();
-	}, [agent, setInterrupts, url, threadId]);
-
-	// The SDK parses, validates, and applies each protocol event. Map only the
-	// typed events this UI displays into its richer message parts.
-	const applyReplyEvent = useCallback((event: AGUIEvent, startsReply = false) => {
-		if (startsReply) setStarted(true);
-		setMessages((ms) => {
-			const last = ms.at(-1);
-			if (last?.role === "assistant") {
-				const parts = applyEvent(last.parts, event);
-				return parts === last.parts ? ms : [...ms.slice(0, -1), { ...last, parts }];
-			}
-			const parts = applyEvent([], event);
-			return parts.length === 0 ? ms : [...ms, { id: crypto.randomUUID(), role: "assistant", parts }];
-		});
-	}, []);
+	}, [agent, url, threadId]);
 
 	// Passed to each runAgent call as a per-run SDK subscriber.
 	const subscriber = useMemo<AgentSubscriber>(
@@ -212,13 +192,28 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 					return parts === last.parts ? ms : [...ms.slice(0, -1), { ...last, parts }];
 				});
 			},
-			onTextMessageContentEvent: ({ event }) => applyReplyEvent(event, true),
-			onReasoningMessageContentEvent: ({ event }) => applyReplyEvent(event, true),
-			onToolCallStartEvent: ({ event }) => applyReplyEvent(event, true),
-			onToolCallArgsEvent: ({ event }) => applyReplyEvent(event),
-			onToolCallResultEvent: ({ event }) => applyReplyEvent(event),
+			// The SDK has already parsed and validated the event; show the ones the page
+			// displays. Only something it shows ends "Thinking…", not step events.
+			onEvent: ({ event: e }) => {
+				const event = e as AGUIEvent;
+				if (
+					event.type === EventType.TEXT_MESSAGE_CONTENT ||
+					event.type === EventType.REASONING_MESSAGE_CONTENT ||
+					event.type === EventType.TOOL_CALL_START
+				)
+					setStarted(true);
+				setMessages((ms) => {
+					const last = ms.at(-1);
+					if (last?.role === "assistant") {
+						const parts = applyEvent(last.parts, event);
+						return parts === last.parts ? ms : [...ms.slice(0, -1), { ...last, parts }];
+					}
+					const parts = applyEvent([], event);
+					return parts.length === 0 ? ms : [...ms, { id: crypto.randomUUID(), role: "assistant", parts }];
+				});
+			},
 		}),
-		[applyReplyEvent, setInterrupts],
+		[],
 	);
 
 	// One run: HttpAgent POSTs an AG-UI RunAgentInput and hands the events it
@@ -245,7 +240,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 				setRunning(false);
 			}
 		},
-		[agent, setInterrupts, subscriber],
+		[agent, subscriber],
 	);
 
 	const send = useCallback(
@@ -262,13 +257,12 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	// is rare enough not to need a button per tool.
 	const answer = useCallback(
 		(approved: boolean) => {
-			const open = interruptsRef.current;
 			const responses: ResumeResponses = {};
-			for (const i of open)
+			for (const i of interrupts)
 				responses[i.id] = { status: "resolved", payload: { type: approved ? "approve" : "reject" } };
-			return run({ messages: [], resume: buildResumeArray(open, responses) });
+			return run({ messages: [], resume: buildResumeArray(interrupts, responses) });
 		},
-		[run],
+		[run, interrupts],
 	);
 
 	// Closing the request stops the reply on the server too (main.py).
@@ -287,7 +281,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		setContext(null);
 		forgetThread(agent);
 		return true;
-	}, [agent, setInterrupts, url, threadId]);
+	}, [agent, url, threadId]);
 
 	return {
 		messages,
