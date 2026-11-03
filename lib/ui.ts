@@ -10,3 +10,7 @@ export const buttonSecondary =
 	"rounded-full bg-surface px-5 py-2.5 text-center font-medium hover:bg-hover disabled:opacity-50";
 
 export const card = "rounded-2xl bg-surface/60 p-5";
+
+// One row in the sidebar: New chat, Usage and each chat share it, so they line up.
+export const sidebarRow =
+	"flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm hover:bg-hover aria-[current=page]:bg-surface";
