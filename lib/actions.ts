@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser } from "./dal";
 import { pool } from "./db";
+import { parseBudget } from "./usage";
 
 export async function newChat() {
 	const user = await requireUser();
@@ -29,6 +30,26 @@ export async function touchChat(id: string, text: string) {
 		[text.slice(0, 60), id, user.id],
 	);
 	revalidatePath("/", "layout");
+}
+
+export type BudgetResult = { ok: boolean; message: string } | null;
+
+/** Sets the signed-in user's monthly token limit. An empty field removes it. */
+export async function setMonthlyBudget(_previous: BudgetResult, formData: FormData): Promise<BudgetResult> {
+	const user = await requireUser();
+	const parsed = parseBudget(formData.get("limit"));
+	if (!parsed.ok) return { ok: false, message: parsed.error };
+	if (parsed.limit === null) {
+		await pool.query("DELETE FROM usage_budgets WHERE user_id = $1", [user.id]);
+	} else {
+		await pool.query(
+			`INSERT INTO usage_budgets (user_id, monthly_token_limit) VALUES ($1, $2)
+			 ON CONFLICT (user_id) DO UPDATE SET monthly_token_limit = $2, updated_at = now()`,
+			[user.id, parsed.limit],
+		);
+	}
+	revalidatePath("/usage");
+	return { ok: true, message: parsed.limit === null ? "Limit removed." : "Limit saved." };
 }
 
 /** Removes the chat from the list. The caller has already deleted its thread (DELETE /agent). */

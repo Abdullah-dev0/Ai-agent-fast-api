@@ -32,6 +32,7 @@ model user {
   accounts account[]
   sessions session[]
   chats    chats[]
+  usage_budgets usage_budgets?
 }
 
 /// How a user logs in. For email and password, the password hash is stored here,
@@ -122,6 +123,16 @@ model token_usage {
   created_at    DateTime @default(now()) @db.Timestamptz(6)
 
   @@index([user_id, created_at])
+}
+
+/// A user's monthly token limit. No row means no limit. agent-server/agent.py
+/// checks it before every model call.
+model usage_budgets {
+  user_id             String   @id
+  monthly_token_limit BigInt
+  updated_at          DateTime @default(now()) @db.Timestamptz(6)
+
+  user user @relation(fields: [user_id], references: [id], onDelete: Cascade)
 }
 
 /// Which files in db/migrations have already run (scripts/migrate.mts).

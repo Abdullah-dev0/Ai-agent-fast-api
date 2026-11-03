@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "./auth";
 import { pool } from "./db";
+import { estimateCost, sumCosts } from "./usage";
 
 export type User = {
 	id: string;
@@ -50,9 +51,19 @@ export async function getChat(id: string, userId: string): Promise<Chat | null> 
 }
 
 export type UsageDay = { day: string; input: number; output: number };
-export type UsageModel = { provider: string; model: string; calls: number; input: number; output: number };
+// cost is null when the model's price is not in lib/usage.ts.
+export type UsageModel = {
+	provider: string;
+	model: string;
+	calls: number;
+	input: number;
+	output: number;
+	cost: number | null;
+};
 export type Usage = {
 	totals: { calls: number; input: number; output: number };
+	/** Estimated dollars. `unpriced`: some model had no known price, so the total is a lower bound. */
+	cost: { total: number; unpriced: boolean };
 	days: UsageDay[];
 	models: UsageModel[];
 };
@@ -81,5 +92,71 @@ export async function getUsage(userId: string, days = 30): Promise<Usage> {
 			[userId, days],
 		),
 	]);
-	return { totals: totals.rows[0], days: perDay.rows, models: perModel.rows };
+	const models: UsageModel[] = perModel.rows.map((m) => ({
+		...m,
+		cost: estimateCost(m.provider, m.model, m.input, m.output),
+	}));
+	return {
+		totals: totals.rows[0],
+		cost: sumCosts(models.map((m) => m.cost)),
+		days: perDay.rows,
+		models,
+	};
+}
+
+export type ChatUsage = {
+	id: string;
+	title: string | null;
+	/** False when the chat was deleted: its usage rows stay. */
+	exists: boolean;
+	tokens: number;
+	cost: number | null;
+};
+
+/** The chats that used the most tokens over the last `days` days. */
+export async function getTopChats(userId: string, days = 30, limit = 5): Promise<ChatUsage[]> {
+	const { rows } = await pool.query(
+		// One row per chat and model, because the price depends on the model.
+		`SELECT t.thread_id AS id, c.title, (c.id IS NOT NULL) AS exists, t.provider, t.model,
+		        sum(t.input_tokens)::float8 AS input, sum(t.output_tokens)::float8 AS output
+		 FROM token_usage t
+		 LEFT JOIN chats c ON c.id = t.thread_id AND c.user_id = t.user_id
+		 WHERE t.user_id = $1 AND t.created_at >= now() - make_interval(days => $2)
+		 GROUP BY t.thread_id, c.id, c.title, t.provider, t.model`,
+		[userId, days],
+	);
+	// costs: one entry per model the chat used, folded into ChatUsage.cost below.
+	const byChat = new Map<string, ChatUsage & { costs: (number | null)[] }>();
+	for (const r of rows) {
+		const chat = byChat.get(r.id) ?? {
+			id: r.id,
+			title: r.title,
+			exists: r.exists,
+			tokens: 0,
+			cost: 0,
+			costs: [] as (number | null)[],
+		};
+		chat.tokens += r.input + r.output;
+		chat.costs.push(estimateCost(r.provider, r.model, r.input, r.output));
+		byChat.set(r.id, chat);
+	}
+	return [...byChat.values()]
+		.map(({ costs, ...chat }) => {
+			const { total, unpriced } = sumCosts(costs);
+			return { ...chat, cost: unpriced ? null : total };
+		})
+		.sort((a, b) => b.tokens - a.tokens)
+		.slice(0, limit);
+}
+
+/** Tokens used this calendar month (UTC) and the user's monthly limit; null limit means none. */
+export async function getBudget(userId: string): Promise<{ used: number; limit: number | null }> {
+	const { rows } = await pool.query<{ used: number; limit: number | null }>(
+		`SELECT
+		   (SELECT coalesce(sum(input_tokens + output_tokens), 0)::float8 FROM token_usage
+		     WHERE user_id = $1 AND created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS used,
+		   (SELECT monthly_token_limit::float8 FROM usage_budgets WHERE user_id = $1) AS "limit"`,
+		[userId],
+	);
+	return rows[0];
 }

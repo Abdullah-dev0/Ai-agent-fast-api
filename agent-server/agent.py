@@ -7,6 +7,7 @@ delete_chat_history comes from HumanInTheLoopMiddleware (docs: "Human-in-the-loo
 
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import NotRequired
@@ -196,6 +197,53 @@ def usage_recorder(pool: AsyncConnectionPool):
     return record_usage
 
 
+BUDGET_MESSAGE = (
+    "You have used your monthly token limit, so I can't reply right now. It resets at the "
+    "start of next month (UTC). You can raise or remove the limit on the Usage page."
+)
+
+
+def budget_guard(pool: AsyncConnectionPool):
+    @wrap_model_call
+    async def enforce_budget(request: ModelRequest, handler):
+        """Stops before the model call once this month's tokens reach the user's limit
+        (usage_budgets), and answers with a fixed message instead. No limit set: no check.
+
+        Two known gaps. The count only includes finished calls, so the reply that
+        crosses the limit can overshoot it. And if the check itself fails, the call
+        goes ahead: a database hiccup should not lock everyone out of the chat."""
+        try:
+            thread_id = get_config()["configurable"]["thread_id"]
+            async with pool.connection() as db:
+                cursor = await db.execute(
+                    # Same month window as getBudget in lib/dal.ts.
+                    """SELECT b.monthly_token_limit AS token_limit,
+                              coalesce(sum(t.input_tokens + t.output_tokens), 0) AS used
+                       FROM chats c
+                       JOIN usage_budgets b ON b.user_id = c.user_id
+                       LEFT JOIN token_usage t ON t.user_id = c.user_id
+                         AND t.created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+                       WHERE c.id = %s
+                       GROUP BY b.monthly_token_limit""",
+                    (thread_id,),
+                )
+                row = await cursor.fetchone()
+        except Exception:
+            logger.exception("Could not check the token budget")
+            return await handler(request)
+        if row and row["used"] >= row["token_limit"]:
+            # A message made here is never streamed (the AG-UI adapter only turns the
+            # model's own stream into text events), so the page would show nothing until
+            # a reload. This event makes the adapter send it now. Same id as the saved
+            # message, so the reload does not show it twice.
+            message = AIMessage(content=BUDGET_MESSAGE, id=str(uuid.uuid4()))
+            await adispatch_custom_event("manually_emit_message", {"message_id": message.id, "message": BUDGET_MESSAGE})
+            return message
+        return await handler(request)
+
+    return enforce_budget
+
+
 def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
     return create_agent(
         model,
@@ -205,6 +253,7 @@ def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
             system_prompt_with_date,
             use_thinking_level,
             usage_recorder(pool),
+            budget_guard(pool),
             clear_old_tool_results,
             # per_call: one interrupt per tool call, answered with a single
             # decision ({"type": "approve"} or {"type": "reject"}). The docs

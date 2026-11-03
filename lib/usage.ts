@@ -59,9 +59,10 @@ export type ParsedBudget = { ok: true; limit: number | null } | { ok: false; err
 export const MIN_BUDGET = 1_000;
 export const MAX_BUDGET = 10_000_000_000;
 
-/** Reads the budget form field. An empty field means "no limit" (limit: null). */
+/** Reads the budget form field. An empty text field means "no limit" (limit: null); a missing field is an error, so it cannot remove a limit by accident. */
 export function parseBudget(raw: FormDataEntryValue | null): ParsedBudget {
-	const text = typeof raw === "string" ? raw.replace(/[,_\s]/g, "") : "";
+	if (typeof raw !== "string") return { ok: false, error: "Enter a whole number of tokens." };
+	const text = raw.replace(/[,_\s]/g, "");
 	if (text === "") return { ok: true, limit: null };
 	const value = Number(text);
 	if (!Number.isInteger(value)) return { ok: false, error: "Enter a whole number of tokens." };
