@@ -27,6 +27,7 @@ from langchain.messages import AIMessage, AnyMessage
 from langchain_core.callbacks import adispatch_custom_event
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.config import get_config
+from langgraph.types import Command
 from psycopg_pool import AsyncConnectionPool
 
 from account_tools import (
@@ -35,7 +36,7 @@ from account_tools import (
     describe_profile_change,
     needs_approval,
 )
-from tools import TOOLS
+from tools import TOOLS, chat_tools
 
 logger = logging.getLogger(__name__)
 
@@ -212,11 +213,26 @@ BUDGET_MESSAGE = (
 )
 
 
+NO_CHAT_MESSAGE = "This chat no longer exists. Start a new chat to keep talking."
+
+
+async def answer_without_model(text: str) -> AIMessage:
+    """A fixed reply in place of a model call. A message made here is never streamed
+    (the AG-UI adapter only turns the model's own stream into text events), so the page
+    would show nothing until a reload. This event makes the adapter send it now. Same id
+    as the saved message, so the reload does not show it twice."""
+    message = AIMessage(content=text, id=str(uuid.uuid4()))
+    await adispatch_custom_event("manually_emit_message", {"message_id": message.id, "message": text})
+    return message
+
+
 def budget_guard(pool: AsyncConnectionPool):
     @wrap_model_call
     async def enforce_budget(request: ModelRequest, handler):
-        """Stops before the model call once this month's tokens reach the user's limit
-        (usage_budgets), and answers with a fixed message instead. No limit set: no check.
+        """Stops before the model call when the thread is not a chat in `chats` (the
+        budget and usage rows are found through that row, so a made-up thread id would
+        get free, unrecorded replies), or once this month's tokens reach the user's
+        limit (usage_budgets). No limit set: only the chat check.
 
         Two known gaps. The count only includes finished calls, so the reply that
         crosses the limit can overshoot it. And if the check itself fails, the call
@@ -225,29 +241,24 @@ def budget_guard(pool: AsyncConnectionPool):
             thread_id = get_config()["configurable"]["thread_id"]
             async with pool.connection() as db:
                 cursor = await db.execute(
-                    # Same month window as getBudget in lib/dal.ts.
+                    # Same month window as getBudget in lib/dal.ts. No row: no such chat.
                     """SELECT b.monthly_token_limit AS token_limit,
-                              coalesce(sum(t.input_tokens + t.output_tokens), 0) AS used
+                              (SELECT coalesce(sum(t.input_tokens + t.output_tokens), 0) FROM token_usage t
+                                WHERE t.user_id = c.user_id
+                                  AND t.created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS used
                        FROM chats c
-                       JOIN usage_budgets b ON b.user_id = c.user_id
-                       LEFT JOIN token_usage t ON t.user_id = c.user_id
-                         AND t.created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-                       WHERE c.id = %s
-                       GROUP BY b.monthly_token_limit""",
+                       LEFT JOIN usage_budgets b ON b.user_id = c.user_id
+                       WHERE c.id = %s""",
                     (thread_id,),
                 )
                 row = await cursor.fetchone()
         except Exception:
             logger.exception("Could not check the token budget")
             return await handler(request)
-        if row and row["used"] >= row["token_limit"]:
-            # A message made here is never streamed (the AG-UI adapter only turns the
-            # model's own stream into text events), so the page would show nothing until
-            # a reload. This event makes the adapter send it now. Same id as the saved
-            # message, so the reload does not show it twice.
-            message = AIMessage(content=BUDGET_MESSAGE, id=str(uuid.uuid4()))
-            await adispatch_custom_event("manually_emit_message", {"message_id": message.id, "message": BUDGET_MESSAGE})
-            return message
+        if row is None:
+            return await answer_without_model(NO_CHAT_MESSAGE)
+        if row["token_limit"] is not None and row["used"] >= row["token_limit"]:
+            return await answer_without_model(BUDGET_MESSAGE)
         return await handler(request)
 
     return enforce_budget
@@ -256,7 +267,7 @@ def budget_guard(pool: AsyncConnectionPool):
 def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
     return create_agent(
         model,
-        [*TOOLS, *account_tools(pool)],
+        [*TOOLS, *chat_tools(pool), *account_tools(pool)],
         state_schema=ChatState,
         middleware=[
             system_prompt_with_date,
@@ -296,9 +307,29 @@ def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
     )
 
 
+class ChatAgent(LangGraphAgent):
+    """LangGraphAgent with a resume LangGraph accepts when several approvals are open.
+
+    The adapter's default packs two or more answers into its own
+    {"__agui_resume_map__": ...} wrapper, which nothing on the LangGraph side reads,
+    so LangGraph fails with "you must specify the interrupt id when resuming".
+    LangGraph's own format is {interrupt_id: answer}; the adapter documents this
+    method as the one subclasses override to build it.
+    """
+
+    def _build_command_from_agui_resume(self, entries, *, open_interrupts=None) -> Command:
+        # per_call mode: each answer is one decision. A cancelled entry is a reject.
+        return Command(
+            resume={
+                e.interrupt_id: e.payload if e.status == "resolved" else {"type": "reject"}
+                for e in entries
+            }
+        )
+
+
 def build_agui_agent(graph) -> LangGraphAgent:
     """Wrap the graph so it streams AG-UI events (what the page's useAgentChat reads)."""
-    return LangGraphAgent(
+    return ChatAgent(
         name="assistant",
         description="Chat agent with tools",
         graph=graph,

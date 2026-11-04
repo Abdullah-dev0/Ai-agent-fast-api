@@ -32,6 +32,8 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	const [thinkingLevel, setThinkingLevel] = useState(savedThinking);
 	const [deleting, startDelete] = useTransition();
 	const [answering, startAnswer] = useTransition();
+	// The user's pick per waiting approval (by id), until all have one and it is sent.
+	const [decisions, setDecisions] = useState<ReadonlyMap<string, boolean>>(new Map());
 	const {
 		messages,
 		approvals,
@@ -65,17 +67,23 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		if (await clear()) await deleteChat(threadId);
 	}
 
-	function decide(approved: boolean) {
+	// Each approval gets its own answer. The run resumes once every one has one.
+	function decide(id: string, approved: boolean) {
+		const next = new Map(decisions).set(id, approved);
+		if (!approvals.every((a) => next.has(a.id))) {
+			setDecisions(next);
+			return;
+		}
+		setDecisions(new Map());
 		startAnswer(async () => {
-			const deleteAsked = approvals.some((a) => a.name === DELETE_CHAT_TOOL);
+			const deleteApproved = approvals.some((a) => a.name === DELETE_CHAT_TOOL && next.get(a.id));
 			// Resolves when the server has closed the stream, so the agent is done writing.
-			const completed = await answer(approved);
-			if (!approved || !completed) return;
-			// The tool only says "approved"; the thread is deleted here, after the reply.
-			if (deleteAsked) return removeChat();
+			const completed = await answer(next);
+			// The tool deleted the chat on the server: leave it and update the list.
+			if (deleteApproved && completed) return deleteChat(threadId);
 			// An approved tool may have changed the name or limit shown by server
-			// components (sidebar, Usage page): fetch them again.
-			router.refresh();
+			// components (sidebar, Usage page), or the chat may be gone: fetch them again.
+			if ([...next.values()].some(Boolean)) router.refresh();
 		});
 	}
 
@@ -171,10 +179,10 @@ export function AgentChat({ threadId }: { threadId: string }) {
 					{thinking && <span className="size-3.5 animate-pulse rounded-full bg-foreground" />}
 
 					{approvals.length > 0 && (
-						<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 rounded-2xl bg-surface p-3 pl-4">
-							<div className="flex min-w-0 flex-col gap-2 text-sm">
-								{approvals.map(({ id, card }) => (
-									<div key={id}>
+						<div className="flex flex-col gap-4 rounded-2xl bg-surface p-3 pl-4">
+							{approvals.map(({ id, card }) => (
+								<div key={id} className="flex w-full flex-wrap items-center justify-between gap-x-4 gap-y-3">
+									<div className="flex min-w-0 flex-col gap-0.5 text-sm">
 										<p className="font-medium">{card.title || "The agent needs your approval to continue."}</p>
 										{/* Detail lines, e.g. "Name: Abdullah → Abdul". */}
 										{card.details.map((line) => (
@@ -183,24 +191,29 @@ export function AgentChat({ threadId }: { threadId: string }) {
 											</p>
 										))}
 									</div>
-								))}
-							</div>
-							<div className="flex shrink-0 gap-2">
-								<button
-									type="button"
-									onClick={() => decide(false)}
-									disabled={answering}
-									className="rounded-full bg-hover px-4 py-1.5 text-sm hover:opacity-80 disabled:opacity-50">
-									Deny
-								</button>
-								<button
-									type="button"
-									onClick={() => decide(true)}
-									disabled={answering}
-									className="rounded-full bg-foreground px-4 py-1.5 text-sm font-medium text-background hover:opacity-85 disabled:opacity-50">
-									Approve
-								</button>
-							</div>
+									<div className="flex shrink-0 gap-2">
+										<button
+											type="button"
+											onClick={() => decide(id, false)}
+											disabled={answering}
+											aria-pressed={decisions.get(id) === false}
+											className="rounded-full bg-hover px-4 py-1.5 text-sm hover:opacity-80 disabled:opacity-50 aria-pressed:ring-2 aria-pressed:ring-foreground">
+											Deny
+										</button>
+										<button
+											type="button"
+											onClick={() => decide(id, true)}
+											disabled={answering}
+											aria-pressed={decisions.get(id) === true}
+											className="rounded-full bg-foreground px-4 py-1.5 text-sm font-medium text-background hover:opacity-85 disabled:opacity-50 aria-pressed:ring-2 aria-pressed:ring-foreground aria-pressed:ring-offset-2 aria-pressed:ring-offset-surface">
+											Approve
+										</button>
+									</div>
+								</div>
+							))}
+							{approvals.length > 1 && (
+								<p className="text-xs text-muted">Answer each one. The agent continues once all are answered.</p>
+							)}
 						</div>
 					)}
 

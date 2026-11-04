@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from langchain.tools import tool
+from langgraph.config import get_config
+from psycopg_pool import AsyncConnectionPool
 from tavily import AsyncTavilyClient
 
 
@@ -162,20 +164,31 @@ async def read_webpage(urls: list[str]) -> str:
     return json.dumps({"pages": pages, "failed": failed}, ensure_ascii=False)
 
 
-@tool
-def delete_chat_history() -> str:
-    """Delete this whole conversation, every message, for good. Use it only when
-    the user asks to delete or clear the chat. The user must approve it first."""
-    # The page deletes the thread (DELETE /agent) once this reply ends, so the
-    # conversation is not erased while the agent is still writing to it.
-    return "Approved: the whole chat history is deleted as soon as this reply ends."
-
-
 TOOLS = [
     get_current_time,
     get_weather,
     calculate,
     web_search,
     read_webpage,
-    delete_chat_history,
 ]
+
+
+def chat_tools(pool: AsyncConnectionPool) -> list:
+    # return_direct: the reply ends with this tool, no model call after it, so nothing
+    # is written to a chat that no longer exists.
+    @tool(return_direct=True)
+    async def delete_chat_history() -> str:
+        """Delete this whole conversation, every message, for good. Use it only when
+        the user asks to delete or clear the chat. The user must approve it first."""
+        # Deletes the app's chat row now, on the server, so it is gone even if the page
+        # closes. The saved messages (the LangGraph thread) cannot be deleted while
+        # this run still writes to it: main.py deletes them once the run has ended.
+        async with pool.connection() as db:
+            cursor = await db.execute(
+                "DELETE FROM chats WHERE id = %s", (get_config()["configurable"]["thread_id"],)
+            )
+        if cursor.rowcount == 0:
+            return "This chat was already deleted."
+        return "This chat is deleted."
+
+    return [delete_chat_history]

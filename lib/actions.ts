@@ -52,7 +52,8 @@ export async function setMonthlyBudget(_previous: BudgetResult, formData: FormDa
 	return { ok: true, message: parsed.limit === null ? "Limit removed." : "Limit saved." };
 }
 
-/** Removes the chat from the list. The caller has already deleted its thread (DELETE /agent). */
+/** Removes the chat from the list and leaves it. The caller has already deleted its
+ * thread (DELETE /agent), or the delete_chat_history tool has deleted both on the server. */
 export async function deleteChat(id: string) {
 	const user = await requireUser();
 	await pool.query("DELETE FROM chats WHERE id = $1 AND user_id = $2", [id, user.id]);

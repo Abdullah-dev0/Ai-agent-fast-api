@@ -1,7 +1,7 @@
 // The tool names the page treats specially. They are defined in agent-server
 // (tools.py, account_tools.py); lib/agent-tools.test.ts fails if one is renamed there.
 
-// Approved: the page deletes the chat once the reply has ended.
+// Approved: the tool deletes the chat on the server, and the page then leaves it.
 export const DELETE_CHAT_TOOL = "delete_chat_history";
 
 // What the account tools answer with: `_result()` in account_tools.py, as JSON.

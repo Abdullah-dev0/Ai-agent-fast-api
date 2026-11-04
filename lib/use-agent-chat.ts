@@ -126,6 +126,15 @@ function applyEvent(parts: Part[], event: AGUIEvent): Part[] {
 
 type ResumeResponses = Parameters<typeof buildResumeArray>[1];
 
+// What the page shows when a reply fails. The server's own message (a Python
+// exception, a provider error) goes to the console, not to the user.
+const REPLY_FAILED = "Something went wrong with that reply. Try again.";
+
+function replyFailed(detail: unknown): Error {
+	console.error("Agent run failed:", detail);
+	return new Error(REPLY_FAILED);
+}
+
 // The SDK remembers live interrupts on the agent instance. The server thread was
 // deleted, so discard that protocol state before starting over.
 function forgetThread(agent: HttpAgent) {
@@ -184,7 +193,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 			},
 			// Stop arrives as a RUN_ERROR with code "abort": not an error.
 			onRunErrorEvent: ({ event }) => {
-				if (event.code !== "abort") setError(new Error(event.message));
+				if (event.code !== "abort") setError(replyFailed(event.message));
 			},
 			onCustomEvent: ({ event }) => {
 				if (event.name === "context_usage") setContext(event.value as ContextUsage);
@@ -245,7 +254,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 			try {
 				await agent.runAgent({ resume: input.resume }, subscriber);
 			} catch (e) {
-				setError(e instanceof Error ? e : new Error(String(e)));
+				setError(replyFailed(e));
 			} finally {
 				setRunning(false);
 			}
@@ -263,15 +272,18 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		[run],
 	);
 
-	// Answers every waiting approval with one decision: AG-UI requires a resume to
-	// cover all open interrupts, and a model can ask for two tools at once, but that
-	// is rare enough not to need a button per tool. Resolves like run(): true once
-	// the resumed reply has completed.
+	// Sends the user's decision for each waiting approval, by its id: approving one
+	// tool never approves another. AG-UI requires a resume to cover every open
+	// interrupt, so the page calls this once all have a decision. Resolves like
+	// run(): true once the resumed reply has completed.
 	const answer = useCallback(
-		(approved: boolean) => {
+		(decisions: ReadonlyMap<string, boolean>) => {
 			const responses: ResumeResponses = {};
-			for (const i of interrupts)
+			for (const i of interrupts) {
+				const approved = decisions.get(i.id);
+				if (approved === undefined) throw new Error(`No decision for approval ${i.id}`);
 				responses[i.id] = { status: "resolved", payload: { type: approved ? "approve" : "reject" } };
+			}
 			return run({ messages: [], resume: buildResumeArray(interrupts, responses) });
 		},
 		[run, interrupts],

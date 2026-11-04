@@ -1,7 +1,8 @@
 """FastAPI server that exposes the LangGraph agent over AG-UI.
 
 POST   /agent                 run the agent; streams AG-UI events (the page's
-                              useAgentChat reads them). ag-ui-langgraph's own endpoint.
+                              useAgentChat reads them). Then deletes the thread if
+                              its chat is gone (the delete_chat_history tool).
 GET    /agent?threadId=...    the saved chat and any approval still waiting
 DELETE /agent?threadId=...    clear that chat from the agent's memory
 GET    /agent/health          simple health check
@@ -11,17 +12,20 @@ stops it. Steps it already finished stay saved in the checkpointer.
 """
 
 import asyncio
+import logging
 import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from ag_ui_langgraph import add_langgraph_fastapi_endpoint
+from ag_ui.core.types import RunAgentInput
+from ag_ui.encoder import EventEncoder
 from ag_ui_langgraph.interrupts import lg_interrupt_to_agui
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
@@ -44,14 +48,59 @@ async def lifespan(app: FastAPI):
     ) as pool:
         checkpointer = AsyncPostgresSaver(pool)
         await checkpointer.setup()  # creates LangGraph's tables once; safe to repeat
+        app.state.pool = pool
         app.state.checkpointer = checkpointer
         app.state.graph = build_graph(checkpointer, pool)
-        # Registered here because the agent needs the checkpointer.
-        add_langgraph_fastapi_endpoint(app, build_agui_agent(app.state.graph), "/agent")
+        app.state.agent = build_agui_agent(app.state.graph)
         yield
 
 
 app = FastAPI(lifespan=lifespan)
+logger = logging.getLogger(__name__)
+
+# Cleanups still running. asyncio keeps only a weak reference to a task, so one
+# nobody holds can be garbage-collected before it finishes.
+_cleanups: set[asyncio.Task] = set()
+
+
+async def forget_deleted_chat(app: FastAPI, thread_id: str):
+    """Deletes the thread's saved messages when its chat row is gone. The
+    delete_chat_history tool deletes the row during the run, but the thread can only
+    go once the run has stopped writing to it, which is now."""
+    try:
+        async with app.state.pool.connection() as db:
+            cursor = await db.execute("SELECT 1 FROM chats WHERE id = %s", (thread_id,))
+            exists = await cursor.fetchone() is not None
+        if not exists:
+            await app.state.checkpointer.adelete_thread(thread_id)
+    except Exception:
+        logger.exception("Could not clean up thread %s", thread_id)
+
+
+@app.post("/agent")
+async def run_agent(input_data: RunAgentInput, request: Request):
+    """The same as ag-ui-langgraph's add_langgraph_fastapi_endpoint, plus the cleanup."""
+    encoder = EventEncoder(accept=request.headers.get("accept"))
+    # One copy per request: the adapter keeps per-run state on the instance.
+    agent = request.app.state.agent.clone()
+
+    async def events():
+        try:
+            async for event in agent.run(input_data):
+                yield encoder.encode(event)
+        finally:
+            # A task, not an await: when the page closes mid-reply this request is
+            # cancelled, and an await here would be cancelled with it.
+            task = asyncio.create_task(forget_deleted_chat(request.app, input_data.thread_id))
+            _cleanups.add(task)
+            task.add_done_callback(_cleanups.discard)
+
+    return StreamingResponse(events(), media_type=encoder.get_content_type())
+
+
+@app.get("/agent/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.get("/agent")
