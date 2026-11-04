@@ -24,6 +24,7 @@ Then, in the project root, `npm run dev`, sign in and open **Agent**.
 | File | What it does |
 |---|---|
 | `tools.py` | The tools: current time, weather (Open-Meteo), a safe calculator, `web_search` and `read_webpage` (Tavily), and `delete_chat_history`, which needs the user's approval. |
+| `account_tools.py` | `update_my_profile` and `set_token_budget`: change the signed-in user's own display name and monthly token limit, after approval. See "Tools that change your data". |
 | `agent.py` | The agent: LangChain's `create_agent`, its name and system prompt (with today's date), and `HumanInTheLoopMiddleware` for the approval. Also the AG-UI wrapper. |
 | `main.py` | The API: `ag-ui-langgraph`'s endpoint to run the agent, plus history and clear. |
 | `history.py` | Turns a saved thread into the messages the page shows after a reload, in the same shape `useAgentChat` builds from the live stream. |
@@ -91,6 +92,28 @@ A waiting approval is saved by the checkpointer, so after a reload
 
 A denied call streams no result (the middleware answers without running the
 tool), so the page labels it "Not run" until a reload shows the reason.
+
+## Tools that change your data (`account_tools.py`)
+
+`update_my_profile(name)` and `set_token_budget(monthly_token_limit)` change the
+signed-in user's own display name and monthly token limit (`null` removes the limit).
+Both wait for the user's approval.
+
+- **The model never picks the user.** Each tool finds the user from the chat
+  (`chats.user_id` for this `thread_id`) and runs one fixed SQL statement. The model
+  only supplies the new value. There is no tool that runs SQL written by the model: a
+  web page the agent read could talk it into a harmful query, and the user could not
+  judge the SQL on an approval card anyway.
+- **The card shows the real change**, for example `Name: Abdullah → Abdul` or
+  `Limit: no limit → 50,000 tokens`, plus this month's usage. `describe_*` in
+  `account_tools.py` reads the current value when the approval is created. It uses a
+  blocking connection because the middleware calls its description function without `await`.
+- **Invalid values never reach the user.** `when=needs_approval` skips the card for a
+  name that is empty or too long, or a limit outside 1,000 to 10 billion tokens (the
+  same limits as `parseBudget` in `lib/usage.ts`). The tool itself then answers with
+  the reason. That check must give the same answer when the run resumes after the answer.
+- After an approved change the page calls `router.refresh()`, so the sidebar name and
+  the Usage page show it at once.
 
 ## Web search (`web_search`, `read_webpage`)
 

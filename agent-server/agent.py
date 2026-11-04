@@ -29,6 +29,12 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.config import get_config
 from psycopg_pool import AsyncConnectionPool
 
+from account_tools import (
+    account_tools,
+    describe_budget_change,
+    describe_profile_change,
+    needs_approval,
+)
 from tools import TOOLS
 
 logger = logging.getLogger(__name__)
@@ -74,7 +80,10 @@ SYSTEM_PROMPT = (
     "the one to three most useful results before answering. Base the answer on what "
     "you read, and cite sources inline as markdown links, like [Title](url). If the "
     "user asks to delete or clear the chat, call delete_chat_history; the app asks "
-    "them to confirm.\n"
+    "them to confirm. If the user asks to change their own display name or their "
+    "monthly token limit, call update_my_profile or set_token_budget; the app shows "
+    "them the before and after and asks them to confirm. Only say a change was made "
+    "if the tool's result says so; if they deny it, say nothing was changed.\n"
     "Always answer the user's latest message. A formatting request (like 'one word "
     "per line' or 'only numbers') applies to the reply it was asked for, not to "
     "every later reply, unless the user says it should. If the user asks a new "
@@ -247,7 +256,7 @@ def budget_guard(pool: AsyncConnectionPool):
 def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
     return create_agent(
         model,
-        TOOLS,
+        [*TOOLS, *account_tools(pool)],
         state_schema=ChatState,
         middleware=[
             system_prompt_with_date,
@@ -263,6 +272,19 @@ def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
                     "delete_chat_history": {
                         "allowed_decisions": ["approve", "reject"],
                         "description": "Delete this whole conversation? This cannot be undone.",
+                    },
+                    # These two change the user's own data. The description reads the
+                    # current value, so the card shows the real before and after, and
+                    # `when` skips the card for a value the tool would refuse anyway.
+                    "update_my_profile": {
+                        "allowed_decisions": ["approve", "reject"],
+                        "description": describe_profile_change,
+                        "when": needs_approval,
+                    },
+                    "set_token_budget": {
+                        "allowed_decisions": ["approve", "reject"],
+                        "description": describe_budget_change,
+                        "when": needs_approval,
                     },
                 },
                 interrupt_mode="per_call",
