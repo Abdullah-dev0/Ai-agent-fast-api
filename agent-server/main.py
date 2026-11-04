@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
+from ag_ui.core import BaseEvent, EventType, MessagesSnapshotEvent
 from ag_ui.core.types import RunAgentInput
 from ag_ui.encoder import EventEncoder
 from ag_ui_langgraph.interrupts import lg_interrupt_to_agui
@@ -77,6 +78,17 @@ async def forget_deleted_chat(app: FastAPI, thread_id: str):
         logger.exception("Could not clean up thread %s", thread_id)
 
 
+def without_reasoning_text(event: BaseEvent) -> BaseEvent | None:
+    """The page shows only that the model thought and for how long, like ChatGPT,
+    so the reasoning itself never leaves the server: some providers send their raw
+    reasoning, not a summary. Its start and end still go out, for "Thinking…"."""
+    if event.type in (EventType.REASONING_MESSAGE_CONTENT, EventType.REASONING_ENCRYPTED_VALUE):
+        return None
+    if isinstance(event, MessagesSnapshotEvent):
+        return event.model_copy(update={"messages": [m for m in event.messages if m.role != "reasoning"]})
+    return event
+
+
 @app.post("/agent")
 async def run_agent(input_data: RunAgentInput, request: Request):
     """The same as ag-ui-langgraph's add_langgraph_fastapi_endpoint, plus the cleanup."""
@@ -87,7 +99,8 @@ async def run_agent(input_data: RunAgentInput, request: Request):
     async def events():
         try:
             async for event in agent.run(input_data):
-                yield encoder.encode(event)
+                if (event := without_reasoning_text(event)) is not None:
+                    yield encoder.encode(event)
         finally:
             # A task, not an await: when the page closes mid-reply this request is
             # cancelled, and an await here would be cancelled with it.

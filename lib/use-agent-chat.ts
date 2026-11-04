@@ -51,18 +51,28 @@ function addUsage(messages: ChatMessage[], runUsage: TokenUsage[]): ChatMessage[
 }
 
 // Fills in what only the end-of-run MESSAGES_SNAPSHOT (the whole thread) carries:
-// Gemini streams no TOOL_CALL_ARGS, and a denied tool's result is never streamed.
+// Gemini streams no TOOL_CALL_ARGS, a denied tool's result is never streamed, and
+// only the snapshot says a result is a failure (`error`; TOOL_CALL_RESULT has none).
 function fillFromSnapshot(parts: Part[], messages: readonly Message[]): Part[] {
 	const args = new Map<string, string>();
 	const results = new Map<string, string>();
+	const failed = new Set<string>();
 	for (const m of messages) {
 		if (m.role === "assistant") for (const call of m.toolCalls ?? []) args.set(call.id, call.function.arguments);
-		if (m.role === "tool") results.set(m.toolCallId, contentToText(m.content));
+		if (m.role === "tool") {
+			results.set(m.toolCallId, contentToText(m.content));
+			if (m.error) failed.add(m.toolCallId);
+		}
 	}
 	const filled = parts.map((p) => {
 		if (p.type !== "tool") return p;
-		const next = { ...p, args: p.args ?? (args.get(p.id) || undefined), result: p.result ?? results.get(p.id) };
-		return next.args === p.args && next.result === p.result ? p : next;
+		const next = {
+			...p,
+			args: p.args ?? (args.get(p.id) || undefined),
+			result: p.result ?? results.get(p.id),
+			failed: p.failed ?? (failed.has(p.id) || undefined),
+		};
+		return next.args === p.args && next.result === p.result && next.failed === p.failed ? p : next;
 	});
 	return filled.some((p, i) => p !== parts[i]) ? filled : parts;
 }
@@ -70,16 +80,26 @@ function fillFromSnapshot(parts: Part[], messages: readonly Message[]): Part[] {
 // Adds one streamed event to the parts of the reply. Returns the same array when
 // the event changes nothing, so React skips the render. The SDK keeps its own copy
 // of the thread too, but its order breaks once a snapshot arrives, so the page
-// builds the reply here, from the events alone.
-function applyEvent(parts: Part[], event: AGUIEvent): Part[] {
+// builds the reply here, from the events alone. `now` is when the event came,
+// read by the caller so this stays pure.
+function applyEvent(parts: Part[], event: AGUIEvent, now: number): Part[] {
 	switch (event.type) {
-		case EventType.TEXT_MESSAGE_CONTENT:
-		case EventType.REASONING_MESSAGE_CONTENT: {
-			const type = event.type === EventType.TEXT_MESSAGE_CONTENT ? "text" : "reasoning";
-			const at = parts.findIndex((p) => p.type === type && p.id === event.messageId);
-			if (at === -1) return [...parts, { type, id: event.messageId, text: event.delta }];
-			return parts.map((p, i) => (i === at && p.type === type ? { ...p, text: p.text + event.delta } : p));
+		case EventType.TEXT_MESSAGE_CONTENT: {
+			const at = parts.findIndex((p) => p.type === "text" && p.id === event.messageId);
+			if (at === -1) return [...parts, { type: "text", id: event.messageId, text: event.delta }];
+			return parts.map((p, i) => (i === at && p.type === "text" ? { ...p, text: p.text + event.delta } : p));
 		}
+		// Reasoning comes as a start and an end only: main.py keeps its text on the server.
+		case EventType.REASONING_MESSAGE_START:
+			if (parts.some((p) => p.type === "reasoning" && p.id === event.messageId)) return parts;
+			return [...parts, { type: "reasoning", id: event.messageId, startedAt: now }];
+		case EventType.REASONING_MESSAGE_END:
+			// "Thought for 4s": rounded, and at least 1s so a quick thought still reads right.
+			return parts.map((p) =>
+				p.type === "reasoning" && p.id === event.messageId && p.startedAt !== undefined && p.seconds === undefined
+					? { ...p, seconds: Math.max(1, Math.round((now - p.startedAt) / 1000)) }
+					: p,
+			);
 		case EventType.MESSAGES_SNAPSHOT:
 			return fillFromSnapshot(parts, event.messages);
 		case EventType.TOOL_CALL_START:
@@ -182,17 +202,18 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 				const event = e as AGUIEvent;
 				if (
 					event.type === EventType.TEXT_MESSAGE_CONTENT ||
-					event.type === EventType.REASONING_MESSAGE_CONTENT ||
+					event.type === EventType.REASONING_MESSAGE_START ||
 					event.type === EventType.TOOL_CALL_START
 				)
 					setStarted(true);
+				const now = Date.now();
 				setMessages((ms) => {
 					const last = ms.at(-1);
 					if (last?.role === "assistant") {
-						const parts = applyEvent(last.parts, event);
+						const parts = applyEvent(last.parts, event, now);
 						return parts === last.parts ? ms : [...ms.slice(0, -1), { ...last, parts }];
 					}
-					const parts = applyEvent([], event);
+					const parts = applyEvent([], event, now);
 					return parts.length === 0 ? ms : [...ms, { id: crypto.randomUUID(), role: "assistant", parts }];
 				});
 			},

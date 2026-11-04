@@ -68,9 +68,9 @@ if not MODEL_NAME:
 # timeout: give up on one call after 60 s instead of waiting forever. OpenRouter's
 # is in milliseconds.
 # include_thoughts: Gemini also returns summaries of its reasoning. The AG-UI
-# adapter streams them as REASONING events and the checkpointer saves them with
-# the message, so the page can show them live and after a reload. (Gemini reads
-# GOOGLE_API_KEY, then GEMINI_API_KEY, the same key as the Next.js app.)
+# adapter streams them as REASONING events; main.py passes on only their start
+# and end, so the page shows "Thinking…" and "Thought for 4s", not the text.
+# (Gemini reads GOOGLE_API_KEY, then GEMINI_API_KEY, the same key as the Next.js app.)
 # stream_usage: OpenAI only reports token counts on a stream when asked. Without
 # them no token_usage row is saved, so the monthly limit would never stop the chat.
 PROVIDER_SETTINGS: dict[str, dict] = {

@@ -188,11 +188,15 @@ reason at all may reject the setting.
 
 ## Reasoning
 
-`include_thoughts=True` makes Gemini return summaries of its reasoning. The
-adapter streams them as `REASONING_*` events, the hook shows them as
-`reasoning` parts, and `history.py` restores them after a reload. It reads them
-through LangChain's `content_blocks`, which turns each provider's own shape
-(Gemini's and Claude's `thinking` blocks, OpenAI's `reasoning` blocks) into one.
+`include_thoughts=True` makes Gemini return summaries of its reasoning. Like
+ChatGPT, the page shows only that the model thought and for how long
+("Thinking…", then "Thought for 4s"), never the text: some providers send their
+raw reasoning, not a summary. So the text never leaves the server: `main.py`
+drops `REASONING_MESSAGE_CONTENT` events and the reasoning messages in
+`MESSAGES_SNAPSHOT`, and `history.py` sends a `reasoning` part without text.
+It finds the reasoning through LangChain's `content_blocks`, which turns each
+provider's own shape (Gemini's and Claude's `thinking` blocks, OpenAI's
+`reasoning` blocks) into one.
 
 ## Long chats
 

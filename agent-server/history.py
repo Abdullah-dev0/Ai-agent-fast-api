@@ -9,8 +9,9 @@ One assistant entry per reply: the AI messages and tool results between two
 user messages are merged into it, in order. Parts:
 
     { type: "text", id, text }
-    { type: "reasoning", id, text }
-    { type: "tool", id, name, args, result? }   (no result: not run yet)
+    { type: "reasoning", id }   (that the model thought; its text stays here)
+    { type: "tool", id, name, args, result?, failed? }   (no result: not run yet;
+        failed: the result has status "error", e.g. the user denied the call)
 """
 
 import json
@@ -41,7 +42,7 @@ def thoughts_of(message: AIMessage) -> list[str]:
 def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
     # A tool's result is its own message in LangGraph; on the page it belongs on
     # the tool call that asked for it.
-    results = {m.tool_call_id: text_of(m.content) for m in messages if isinstance(m, ToolMessage)}
+    results = {m.tool_call_id: m for m in messages if isinstance(m, ToolMessage)}
     ui: list[dict] = []
     for m in messages:
         if isinstance(m, HumanMessage):
@@ -50,15 +51,15 @@ def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
             if not ui or ui[-1]["role"] != "assistant":
                 ui.append({"id": m.id, "role": "assistant", "parts": []})
             parts = ui[-1]["parts"]
-            # Reasoning first, as it streamed.
-            parts += [
-                {"type": "reasoning", "id": f"{m.id}-reasoning-{i}", "text": thought}
-                for i, thought in enumerate(thoughts_of(m))
-            ]
+            # Reasoning first, as it streamed. Only that it happened: like the live
+            # stream (main.py), the text stays on the server.
+            parts += [{"type": "reasoning", "id": f"{m.id}-reasoning-{i}"} for i in range(len(thoughts_of(m)))]
             for call in m.tool_calls:
                 part = {"type": "tool", "id": call["id"], "name": call["name"], "args": json.dumps(call["args"])}
-                if call["id"] in results:
-                    part["result"] = results[call["id"]]
+                if (result := results.get(call["id"])) is not None:
+                    part["result"] = text_of(result.content)
+                    if result.status == "error":
+                        part["failed"] = True
                 parts.append(part)
             if text := text_of(m.content):
                 parts.append({"type": "text", "id": m.id, "text": text})

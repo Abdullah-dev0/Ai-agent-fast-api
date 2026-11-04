@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { ChatMessage, Part } from "@/lib/chat-types";
-import { CheckIcon, ChevronIcon, CopyIcon } from "./icons";
+import { CheckIcon, CopyIcon } from "./icons";
 import { MARKDOWN, MarkdownText } from "./markdown";
 import { ToolCall } from "./tool-call";
 
@@ -64,19 +64,12 @@ export function AssistantMessage({
 	);
 }
 
-// Gemini's reasoning summary: streamed live, restored after a reload by history.py.
+// That the model thought, and for how long, not what. Like ChatGPT, the text itself
+// stays hidden: some providers send their raw reasoning, which can be long and
+// confused, not a summary written to be read.
 function Reasoning({ part, active }: { part: Extract<Part, { type: "reasoning" }>; active: boolean }) {
-	return (
-		<details className="group">
-			<summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
-				<span className={active ? "animate-pulse" : undefined}>{active ? "Thinking" : "Thought"}</span>
-				<ChevronIcon />
-			</summary>
-			<div className={`mt-2 border-l-2 border-line pl-4 text-sm text-muted ${MARKDOWN}`}>
-				<MarkdownText text={part.text} />
-			</div>
-		</details>
-	);
+	const label = active ? "Thinking…" : part.seconds ? `Thought for ${part.seconds}s` : "Thought";
+	return <p className={`text-sm text-muted ${active ? "animate-pulse" : ""}`}>{label}</p>;
 }
 
 function CopyButton({ text }: { text: string }) {

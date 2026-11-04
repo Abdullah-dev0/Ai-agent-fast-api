@@ -7,9 +7,14 @@ import type { ApprovalCard } from "./agent-tools";
 // a live one. One assistant message per reply; its parts in the order they came.
 export type Part =
 	| { type: "text"; id: string; text: string }
-	| { type: "reasoning"; id: string; text: string }
-	// No `result`: the tool has not run (yet).
-	| { type: "tool"; id: string; name: string; args?: string; result?: string };
+	// That the model thought, without what: like ChatGPT, its reasoning text stays on
+	// the server (main.py). `startedAt`/`seconds` are measured live (a reloaded chat
+	// has neither): "Thought for 4s".
+	| { type: "reasoning"; id: string; startedAt?: number; seconds?: number }
+	// No `result`: the tool has not run (yet). `failed`: the result is a failure
+	// (status "error" on the server), e.g. the user denied the call; its text is
+	// then written for the model, not for the user.
+	| { type: "tool"; id: string; name: string; args?: string; result?: string; failed?: boolean };
 
 // Tokens a reply used, over all its model calls. Missing if the provider reported none.
 export type Usage = { input: number; output: number };
