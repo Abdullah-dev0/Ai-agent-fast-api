@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { DELETE_CHAT_TOOL } from "@/lib/agent-tools";
 import { deleteChat, touchChat } from "@/lib/actions";
 import { THINKING_LEVELS, useAgentChat, type ThinkingLevel } from "@/lib/use-agent-chat";
 import { AssistantMessage } from "./chat/assistant-message";
@@ -66,14 +67,15 @@ export function AgentChat({ threadId }: { threadId: string }) {
 
 	function decide(approved: boolean) {
 		startAnswer(async () => {
-			const deleteAsked = approvals.some((a) => a.name === "delete_chat_history");
-			const changedAccount = approvals.some((a) => a.name === "update_my_profile" || a.name === "set_token_budget");
-			await answer(approved);
-			// The new name and limit live in server components (sidebar, Usage page): fetch them again.
-			if (approved && changedAccount) router.refresh();
-			// The tool only says "approved"; the thread is deleted now that the
-			// reply has ended, so the agent was not still writing to it.
-			if (approved && deleteAsked) setTimeout(removeChat, 1000);
+			const deleteAsked = approvals.some((a) => a.name === DELETE_CHAT_TOOL);
+			// Resolves when the server has closed the stream, so the agent is done writing.
+			const completed = await answer(approved);
+			if (!approved || !completed) return;
+			// The tool only says "approved"; the thread is deleted here, after the reply.
+			if (deleteAsked) return removeChat();
+			// An approved tool may have changed the name or limit shown by server
+			// components (sidebar, Usage page): fetch them again.
+			router.refresh();
 		});
 	}
 

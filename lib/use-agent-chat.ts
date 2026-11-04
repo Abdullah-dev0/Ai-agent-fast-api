@@ -10,7 +10,7 @@ import {
 	type ResumeEntry,
 	type TokenUsage,
 } from "@ag-ui/core";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // Our own chat hook for the Python agent server (agent-server/main.py).
 // The server streams AG-UI events (https://docs.ag-ui.com); @ag-ui/client's
@@ -143,6 +143,8 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	// the page builds the messages it shows from the events.
 	const agent = useMemo(() => new HttpAgent({ url, threadId }), [url, threadId]);
 	const approvals = useMemo(() => toApprovals(interrupts), [interrupts]);
+	// Set when a run ends with RUN_FINISHED and no approval left to answer; run() reads it.
+	const finished = useRef(false);
 
 	// The saved chat and any approval still waiting (GET /agent in main.py).
 	// Next hides a chat you switch away from instead of unmounting it, so its reply
@@ -172,6 +174,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		() => ({
 			onRunFinishedEvent: (p) => {
 				if (p.outcome === "interrupt") setInterrupts(p.interrupts);
+				else finished.current = true;
 				const runUsage = p.event.usage;
 				if (runUsage?.length) setMessages((ms) => addUsage(ms, runUsage));
 			},
@@ -217,17 +220,20 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	);
 
 	// One run: HttpAgent POSTs an AG-UI RunAgentInput and hands the events it
-	// streams back to the subscriber.
+	// streams back to the subscriber. Resolves once the server has closed the stream,
+	// with true if the reply completed. false: it failed, was stopped, or paused
+	// for another approval.
 	const run = useCallback(
 		async (input: {
 			messages: { id: string; role: "user"; content: string }[];
 			resume?: ResumeEntry[];
 			state?: { thinking_level: ThinkingLevel };
-		}) => {
+		}): Promise<boolean> => {
 			setRunning(true);
 			setStarted(false);
 			setError(undefined);
 			setInterrupts([]);
+			finished.current = false;
 			// HttpAgent sends its whole message list and state every run: set them to
 			// just this run's, since the server keeps the rest.
 			agent.setMessages(input.messages);
@@ -239,6 +245,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 			} finally {
 				setRunning(false);
 			}
+			return finished.current;
 		},
 		[agent, subscriber],
 	);
@@ -254,7 +261,8 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 
 	// Answers every waiting approval with one decision: AG-UI requires a resume to
 	// cover all open interrupts, and a model can ask for two tools at once, but that
-	// is rare enough not to need a button per tool.
+	// is rare enough not to need a button per tool. Resolves like run(): true once
+	// the resumed reply has completed.
 	const answer = useCallback(
 		(approved: boolean) => {
 			const responses: ResumeResponses = {};

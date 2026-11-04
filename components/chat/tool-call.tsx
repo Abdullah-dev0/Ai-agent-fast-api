@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ACCOUNT_SETTINGS } from "@/lib/agent-tools";
 import type { Part } from "@/lib/use-agent-chat";
 import { ChevronIcon, CloudIcon, GlobeIcon, ToolIcon } from "./icons";
 
@@ -52,12 +53,6 @@ function weatherView(part: ToolPart, running: boolean): View | null {
 	}
 	return { icon, label: `Checked the weather${where}`, body: note(part.result) };
 }
-
-// A Map, not an object: an object would also "know" names like "constructor".
-const ACCOUNT_SETTINGS = new Map([
-	["update_my_profile", "your display name"],
-	["set_token_budget", "your monthly token limit"],
-]);
 
 function accountView(part: ToolPart, running: boolean): View | null {
 	const what = ACCOUNT_SETTINGS.get(part.name);
