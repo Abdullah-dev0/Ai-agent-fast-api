@@ -1,12 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { ChatMessage } from "@/lib/chat-types";
 import { CheckIcon, CopyIcon } from "./icons";
 import { MARKDOWN, MarkdownText } from "./markdown";
 import { ToolCall } from "./tool-call";
 
-export function AssistantMessage({
+// Memoized: the chat re-renders on every streamed token, but only the reply being
+// written gets a new `message` (use-agent-chat keeps the others as the same
+// objects), so older replies skip re-rendering and re-parsing their markdown.
+export const AssistantMessage = memo(function AssistantMessage({
 	message,
 	streaming,
 	latest,
@@ -65,7 +68,7 @@ export function AssistantMessage({
 			)}
 		</div>
 	);
-}
+});
 
 function CopyButton({ text }: { text: string }) {
 	const [copied, setCopied] = useState(false);

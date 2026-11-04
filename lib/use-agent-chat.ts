@@ -124,6 +124,10 @@ function applyEvent(parts: Part[], event: AGUIEvent, now: number): Part[] {
 
 type ResumeResponses = Parameters<typeof buildResumeArray>[1];
 
+// The one "nothing is waiting" value. A fresh [] each run would count as a change
+// and re-render every message (AssistantMessage is a memo) for nothing.
+const NO_INTERRUPTS: Interrupt[] = [];
+
 // What the page shows when a reply fails. The server's own message (a Python
 // exception, a provider error) goes to the console, not to the user.
 const REPLY_FAILED = "Something went wrong with that reply. Try again.";
@@ -144,7 +148,7 @@ function forgetThread(agent: HttpAgent) {
 export function useAgentChat({ url, threadId }: { url: string; threadId: string }) {
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	// What the run is paused on, as AG-UI sent it.
-	const [interrupts, setInterrupts] = useState<Interrupt[]>([]);
+	const [interrupts, setInterrupts] = useState<Interrupt[]>(NO_INTERRUPTS);
 	const [context, setContext] = useState<ContextUsage | null>(null);
 	const [loading, setLoading] = useState(true); // loading the saved chat
 	const [running, setRunning] = useState(false); // a reply is streaming
@@ -169,7 +173,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 			.then((data: SavedChat) => {
 				setMessages(data.messages);
 				setContext(data.context);
-				setInterrupts(data.interrupts);
+				setInterrupts(data.interrupts.length ? data.interrupts : NO_INTERRUPTS);
 			})
 			.catch((e: unknown) => {
 				if (!controller.signal.aborted) setError(e instanceof Error ? e : new Error(String(e)));
@@ -234,7 +238,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 			setRunning(true);
 			setStarted(false);
 			setError(undefined);
-			setInterrupts([]);
+			setInterrupts(NO_INTERRUPTS);
 			finished.current = false;
 			// HttpAgent sends its whole message list and state every run: set them to
 			// just this run's, since the server keeps the rest.
@@ -290,7 +294,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 			return false;
 		}
 		setMessages([]);
-		setInterrupts([]);
+		setInterrupts(NO_INTERRUPTS);
 		setContext(null);
 		forgetThread(agent);
 		return true;
