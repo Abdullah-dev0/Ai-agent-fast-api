@@ -26,17 +26,16 @@ def text_of(content) -> str:
 
 
 def thoughts_of(message: AIMessage) -> list[str]:
-    """The model's reasoning. OpenRouter saves it in additional_kwargs; Gemini
-    (include_thoughts=True) as {"type": "thinking", "thinking": "..."} blocks."""
-    if reasoning := message.additional_kwargs.get("reasoning_content"):
-        return [reasoning]
-    if isinstance(message.content, str):
-        return []
-    return [
-        p["thinking"]
-        for p in message.content
-        if isinstance(p, dict) and p.get("type") == "thinking" and p.get("thinking")
+    """The model's reasoning, whichever model wrote it. Each provider saves it in its
+    own shape (Gemini and Claude as "thinking" blocks, OpenAI as "reasoning" blocks);
+    LangChain's content_blocks turns them all into {"type": "reasoning", "reasoning": ...}.
+    OpenRouter has no translator there and keeps it in additional_kwargs."""
+    thoughts = [
+        b["reasoning"] for b in message.content_blocks if b.get("type") == "reasoning" and b.get("reasoning")
     ]
+    if not thoughts and (reasoning := message.additional_kwargs.get("reasoning_content")):
+        return [reasoning]
+    return thoughts
 
 
 def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:

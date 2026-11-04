@@ -40,30 +40,47 @@ from tools import TOOLS, chat_tools
 
 logger = logging.getLogger(__name__)
 
-# USE_OPENROUTER=true in .env uses OpenRouter's OPENROUTER_MODEL; otherwise Gemini.
-USE_OPENROUTER = os.environ.get("USE_OPENROUTER", "").strip().lower() == "true"
-PROVIDER = "openrouter" if USE_OPENROUTER else "google_genai"
-MODEL_NAME = os.environ.get("OPENROUTER_MODEL", "openrouter/free") if USE_OPENROUTER else "gemini-3.5-flash"
+def pick_model() -> str:
+    """The model, as "provider:model" in LangChain's init_chat_model names.
 
-# The Gemini integration reads GOOGLE_API_KEY, then falls back to GEMINI_API_KEY,
-# so this uses the same key as the Next.js app. OpenRouter reads OPENROUTER_API_KEY.
-# The full Flash model, not -lite: the lite one tended to keep obeying an old
-# instruction ("one word per line") long after the user moved on.
-# timeout: give up on one Gemini call after 60 s instead of waiting forever.
-# max_retries: retry a failed call (429/503 are common on the free tier) at most twice.
+    MODEL in .env picks it, e.g. "openai:gpt-5.1", "anthropic:claude-sonnet-5-5",
+    "groq:openai/gpt-oss-120b" or "openrouter:openrouter/free". The provider's
+    LangChain package must be installed (`uv add langchain-openai`, ...) and its
+    API key set (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...). The model must support
+    tool calling: the agent cannot work without its tools.
+    Without MODEL: USE_OPENROUTER=true with OPENROUTER_MODEL (the older setting),
+    else Gemini. The full Flash model, not -lite: the lite one tended to keep
+    obeying an old instruction ("one word per line") long after the user moved on.
+    """
+    if chosen := os.environ.get("MODEL", "").strip():
+        return chosen
+    if os.environ.get("USE_OPENROUTER", "").strip().lower() == "true":
+        return f"openrouter:{os.environ.get('OPENROUTER_MODEL', 'openrouter/free')}"
+    return "google_genai:gemini-3.5-flash"
+
+
+MODEL = pick_model()
+PROVIDER, _, MODEL_NAME = MODEL.partition(":")
+if not MODEL_NAME:
+    raise ValueError(f'MODEL must look like "provider:model", got {MODEL!r}')
+
+# Settings only some providers have. Any other provider gets the defaults below.
+# timeout: give up on one call after 60 s instead of waiting forever. OpenRouter's
+# is in milliseconds.
 # include_thoughts: Gemini also returns summaries of its reasoning. The AG-UI
 # adapter streams them as REASONING events and the checkpointer saves them with
-# the message, so the page can show them live and after a reload.
-# OpenRouter's timeout is in milliseconds, and it has no include_thoughts: the
-# thinking level below turns its reasoning on.
-if USE_OPENROUTER:
-    model = init_chat_model(
-        f"openrouter:{MODEL_NAME}",
-        timeout=60_000,
-        max_retries=2,
-    )
-else:
-    model = init_chat_model(f"google_genai:{MODEL_NAME}", timeout=60, max_retries=2, include_thoughts=True)
+# the message, so the page can show them live and after a reload. (Gemini reads
+# GOOGLE_API_KEY, then GEMINI_API_KEY, the same key as the Next.js app.)
+# stream_usage: OpenAI only reports token counts on a stream when asked. Without
+# them no token_usage row is saved, so the monthly limit would never stop the chat.
+PROVIDER_SETTINGS: dict[str, dict] = {
+    "google_genai": {"include_thoughts": True},
+    "openrouter": {"timeout": 60_000},
+    "openai": {"stream_usage": True},
+}
+
+# max_retries: retry a failed call (429/503 are common on free tiers) at most twice.
+model = init_chat_model(MODEL, **{"timeout": 60, "max_retries": 2, **PROVIDER_SETTINGS.get(PROVIDER, {})})
 
 # The name the assistant uses for itself. Change it here.
 ASSISTANT_NAME = "Aragon"
@@ -109,8 +126,21 @@ def system_prompt_with_date(request: ModelRequest) -> str:
 
 
 # The thinking levels, the same list as THINKING_LEVELS in use-agent-chat.ts.
-# Gemini's own levels; OpenRouter accepts them as reasoning efforts.
+# Gemini's own levels; OpenRouter and OpenAI accept them as reasoning efforts.
 THINKING_LEVELS = {"minimal", "low", "medium", "high"}
+
+
+def thinking_setting(level: str) -> dict:
+    """The model setting for a thinking level. Each provider names it differently.
+    Other providers get none and think at their default: there is no one setting
+    every model accepts. A model that cannot reason at all may reject the setting."""
+    if PROVIDER == "google_genai":
+        return {"thinking_level": level}
+    if PROVIDER == "openrouter":
+        return {"reasoning": {"effort": level}}
+    if PROVIDER == "openai":
+        return {"reasoning_effort": level}
+    return {}
 
 
 class ChatState(AgentState):
@@ -123,8 +153,7 @@ class ChatState(AgentState):
 async def use_thinking_level(request: ModelRequest, handler):
     """Calls the model at the picked level. Anything else keeps the model's default."""
     level = request.state.get("thinking_level")
-    if level in THINKING_LEVELS:
-        setting = {"reasoning": {"effort": level}} if USE_OPENROUTER else {"thinking_level": level}
+    if level in THINKING_LEVELS and (setting := thinking_setting(level)):
         request = request.override(model_settings={**request.model_settings, **setting})
     return await handler(request)
 

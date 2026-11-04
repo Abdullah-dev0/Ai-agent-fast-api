@@ -1,6 +1,6 @@
 # Agent server (Python)
 
-**Aragon**, a LangChain agent (Gemini + twelve tools, web search included) served
+**Aragon**, a LangChain agent (Gemini by default, see "Changing the model"; twelve tools, web search included) served
 by FastAPI over AG-UI. The
 Next.js app's `/agent` page talks to it with our own React hook,
 `useAgentChat` (`lib/use-agent-chat.ts`).
@@ -159,11 +159,40 @@ prompt tells it never to say it is Gemini or to name the model or company
 behind it. A prompt is not a guarantee: a determined user can sometimes get a
 model to break such rules.
 
+## Changing the model
+
+Set `MODEL` in the root `.env` as `provider:model` (LangChain's `init_chat_model`
+names). Without it the agent uses `USE_OPENROUTER`/`OPENROUTER_MODEL` if set, else
+`google_genai:gemini-3.5-flash`. The page does not change: it only sees AG-UI events.
+
+```bash
+# .env
+MODEL=openai:gpt-5.1                  # needs OPENAI_API_KEY
+MODEL=anthropic:claude-sonnet-5-5     # needs ANTHROPIC_API_KEY
+MODEL=groq:openai/gpt-oss-120b        # needs GROQ_API_KEY
+MODEL=openrouter:openrouter/free      # needs OPENROUTER_API_KEY
+```
+
+Install the provider's package once, e.g. `uv add langchain-openai` (or
+`langchain-anthropic`, `langchain-groq`). Then check three things:
+
+- **Tool calling.** The model must support it, or the agent cannot use its tools.
+- **Token usage.** Send one message and look for a new `token_usage` row. A model
+  that reports no usage gets no rows, and then the monthly limit never stops it.
+- **Price.** Add the model to `PRICES` in `lib/usage.ts`, or the Usage page shows
+  n/a for its cost. The key is the provider and the model name the API reports.
+
+The thinking level is sent to Gemini, OpenRouter and OpenAI (`thinking_setting`
+in `agent.py`). Other providers think at their default, and a model that cannot
+reason at all may reject the setting.
+
 ## Reasoning
 
 `include_thoughts=True` makes Gemini return summaries of its reasoning. The
 adapter streams them as `REASONING_*` events, the hook shows them as
-`reasoning` parts, and `history.py` restores them after a reload.
+`reasoning` parts, and `history.py` restores them after a reload. It reads them
+through LangChain's `content_blocks`, which turns each provider's own shape
+(Gemini's and Claude's `thinking` blocks, OpenAI's `reasoning` blocks) into one.
 
 ## Long chats
 
