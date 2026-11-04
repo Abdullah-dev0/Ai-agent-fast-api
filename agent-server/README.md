@@ -203,13 +203,19 @@ Once a chat passes about 30,000 tokens (an estimate, not Gemini's own count),
 `ContextEditingMiddleware` in `agent.py` replaces all but the 3 newest tool
 results with a short note. The model can call the tool again if it needs one.
 
-This only changes the copy sent to the model. The checkpointer keeps every
-result, so the page still shows them after a reload. Plain text messages are
-never removed, so a long chat with few tools still grows.
+Then `keep_recent_messages` sends only the newest ~50,000 tokens of the chat
+(`RECENT_TOKENS`), cut at a user message so a tool result always comes with its
+call. A turn bigger than that on its own still goes whole. So the cost of a reply
+stays flat and a chat never outgrows the model; the model forgets what falls out
+(ChatGPT does the same). Raise `RECENT_TOKENS` to remember more for more tokens.
+
+Both only change the copy sent to the model. The checkpointer keeps every
+message and result, so the page still shows the whole chat after a reload.
 
 Do not add `SummarizationMiddleware` as things stand: it deletes the old messages
 from the checkpointer, and `GET /agent` reads the chat from there, so they would
-vanish from the page. It needs a separate table for the page's history first.
+vanish from the page. A summary of what falls out (what Claude.ai does) would have
+to be kept beside the chat instead, not in place of it.
 
 ## Things to know before using this for real
 

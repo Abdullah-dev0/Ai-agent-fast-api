@@ -23,8 +23,9 @@ from langchain.agents.middleware import (
     wrap_model_call,
 )
 from langchain.chat_models import init_chat_model
-from langchain.messages import AIMessage, AnyMessage
+from langchain.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.callbacks import adispatch_custom_event
+from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.config import get_config
 from langgraph.types import Command
@@ -199,6 +200,40 @@ clear_old_tool_results = ContextEditingMiddleware(
 )
 
 
+# How much of the chat each model call sees: the newest ~50,000 tokens (a rough
+# count). Every call resends the chat, so without this each reply costs more than
+# the last and a long chat ends up too big for the model. Like the tool results
+# above, only the copy sent to the model is cut: the saved chat keeps everything and
+# the page still shows it. The model forgets what falls out (ChatGPT does the same).
+RECENT_TOKENS = 50_000
+
+
+def recent_messages(messages: list[AnyMessage], max_tokens: int = RECENT_TOKENS) -> list[AnyMessage]:
+    """The newest messages that fit in max_tokens, starting at a user message, so a
+    tool result never comes without the call that asked for it. The current turn
+    always goes whole, even when it alone is over the budget."""
+    recent = trim_messages(
+        messages,
+        strategy="last",
+        max_tokens=max_tokens,
+        token_counter=count_tokens_approximately,
+        start_on="human",
+    )
+    if recent:
+        return recent
+    last_question = max((i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), default=0)
+    return messages[last_question:]
+
+
+@wrap_model_call
+async def keep_recent_messages(request: ModelRequest, handler):
+    """Sends the model only recent_messages() of the chat."""
+    recent = recent_messages(request.messages)
+    if len(recent) < len(request.messages):
+        request = request.override(messages=recent)
+    return await handler(request)
+
+
 def usage_recorder(pool: AsyncConnectionPool):
     @wrap_model_call
     async def record_usage(request: ModelRequest, handler):
@@ -304,6 +339,8 @@ def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
             usage_recorder(pool),
             budget_guard(pool),
             clear_old_tool_results,
+            # After the clearing above, so it counts the chat with old results shortened.
+            keep_recent_messages,
             # per_call: one interrupt per tool call, answered with a single
             # decision ({"type": "approve"} or {"type": "reject"}). The docs
             # recommend it for new agents.
