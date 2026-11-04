@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { ChatMessage, Part } from "@/lib/chat-types";
+import type { ChatMessage } from "@/lib/chat-types";
 import { CheckIcon, CopyIcon } from "./icons";
 import { MARKDOWN, MarkdownText } from "./markdown";
 import { ToolCall } from "./tool-call";
@@ -18,11 +18,20 @@ export function AssistantMessage({
 	waiting: string[];
 }) {
 	const text = message.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n");
-	const lastPart = message.parts.at(-1);
 	// The reply is not over while a tool waits, so its totals would be early.
 	const paused = message.parts.some((p) => waiting.includes(p.id));
+	// Like ChatGPT: one line for all the reply's reasoning, never its text (that stays
+	// on the server). Timed live only, so a reloaded chat shows no line.
+	const last = message.parts.at(-1);
+	const thinking = streaming && last?.type === "reasoning" && last.seconds === undefined;
+	const seconds = message.parts.reduce((sum, p) => sum + (p.type === "reasoning" ? (p.seconds ?? 0) : 0), 0);
 	return (
 		<div className="group/reply flex flex-col gap-3 leading-7">
+			{(thinking || seconds > 0) && (
+				<p className={`text-sm text-muted ${thinking ? "animate-pulse" : ""}`}>
+					{thinking ? "Thinking…" : `Thought for ${seconds}s`}
+				</p>
+			)}
 			{message.parts.map((part) => {
 				if (part.type === "text")
 					return (
@@ -30,16 +39,10 @@ export function AssistantMessage({
 							<MarkdownText text={part.text} />
 						</div>
 					);
-				if (part.type === "reasoning")
-					return <Reasoning key={part.id} part={part} active={streaming && part === lastPart} />;
-				return (
-					<ToolCall
-						key={part.id}
-						part={part}
-						waiting={waiting.includes(part.id)}
-						running={streaming}
-					/>
-				);
+				// The approval card under the reply already says what a waiting call asks.
+				if (part.type === "tool" && !waiting.includes(part.id))
+					return <ToolCall key={part.id} part={part} running={streaming} />;
+				return null;
 			})}
 			{!streaming && !paused && (text || message.usage) && (
 				// Like ChatGPT: older replies show this row on hover. Touch screens,
@@ -62,14 +65,6 @@ export function AssistantMessage({
 			)}
 		</div>
 	);
-}
-
-// That the model thought, and for how long, not what. Like ChatGPT, the text itself
-// stays hidden: some providers send their raw reasoning, which can be long and
-// confused, not a summary written to be read.
-function Reasoning({ part, active }: { part: Extract<Part, { type: "reasoning" }>; active: boolean }) {
-	const label = active ? "Thinking…" : part.seconds ? `Thought for ${part.seconds}s` : "Thought";
-	return <p className={`text-sm text-muted ${active ? "animate-pulse" : ""}`}>{label}</p>;
 }
 
 function CopyButton({ text }: { text: string }) {

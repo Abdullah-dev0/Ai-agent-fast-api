@@ -9,9 +9,11 @@ One assistant entry per reply: the AI messages and tool results between two
 user messages are merged into it, in order. Parts:
 
     { type: "text", id, text }
-    { type: "reasoning", id }   (that the model thought; its text stays here)
     { type: "tool", id, name, args, result?, failed? }   (no result: not run yet;
         failed: the result has status "error", e.g. the user denied the call)
+
+No reasoning parts: the page shows reasoning only as "Thought for 4s", timed while
+it streams, and a saved chat has no timing to show (nor is the text ever sent).
 """
 
 import json
@@ -26,19 +28,6 @@ def text_of(content) -> str:
     return "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
 
 
-def thoughts_of(message: AIMessage) -> list[str]:
-    """The model's reasoning, whichever model wrote it. Each provider saves it in its
-    own shape (Gemini and Claude as "thinking" blocks, OpenAI as "reasoning" blocks);
-    LangChain's content_blocks turns them all into {"type": "reasoning", "reasoning": ...}.
-    OpenRouter has no translator there and keeps it in additional_kwargs."""
-    thoughts = [
-        b["reasoning"] for b in message.content_blocks if b.get("type") == "reasoning" and b.get("reasoning")
-    ]
-    if not thoughts and (reasoning := message.additional_kwargs.get("reasoning_content")):
-        return [reasoning]
-    return thoughts
-
-
 def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
     # A tool's result is its own message in LangGraph; on the page it belongs on
     # the tool call that asked for it.
@@ -51,9 +40,6 @@ def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
             if not ui or ui[-1]["role"] != "assistant":
                 ui.append({"id": m.id, "role": "assistant", "parts": []})
             parts = ui[-1]["parts"]
-            # Reasoning first, as it streamed. Only that it happened: like the live
-            # stream (main.py), the text stays on the server.
-            parts += [{"type": "reasoning", "id": f"{m.id}-reasoning-{i}"} for i in range(len(thoughts_of(m)))]
             for call in m.tool_calls:
                 part = {"type": "tool", "id": call["id"], "name": call["name"], "args": json.dumps(call["args"])}
                 if (result := results.get(call["id"])) is not None:

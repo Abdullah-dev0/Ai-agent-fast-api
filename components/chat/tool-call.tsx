@@ -12,10 +12,9 @@ type View = { icon: ReactNode; label: ReactNode; pulse?: boolean; body?: ReactNo
 // No result and not running: the tool did not run (stopped, or still to be
 // answered). A failed result (denied, or the tool broke) is text for the model,
 // so it is never shown: the line just says the step did not happen.
-export function ToolCall({ part, waiting, running }: { part: ToolPart; waiting: boolean; running: boolean }) {
-	// The approval card under the reply already says what is being asked.
-	if (waiting) return null;
-
+// A call waiting for approval is not shown at all (Steps leaves it out): the card
+// under the reply already says what is being asked.
+export function ToolCall({ part, running }: { part: ToolPart; running: boolean }) {
 	// Tools we know get a sentence; any other tool gets its name.
 	const view =
 		weatherView(part, running) ??

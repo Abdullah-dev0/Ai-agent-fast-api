@@ -8,8 +8,8 @@ import type { ApprovalCard } from "./agent-tools";
 export type Part =
 	| { type: "text"; id: string; text: string }
 	// That the model thought, without what: like ChatGPT, its reasoning text stays on
-	// the server (main.py). `startedAt`/`seconds` are measured live (a reloaded chat
-	// has neither): "Thought for 4s".
+	// the server (main.py). Live only, timed from its start and end events for
+	// "Thought for 4s"; a reloaded chat has none (history.py).
 	| { type: "reasoning"; id: string; startedAt?: number; seconds?: number }
 	// No `result`: the tool has not run (yet). `failed`: the result is a failure
 	// (status "error" on the server), e.g. the user denied the call; its text is
