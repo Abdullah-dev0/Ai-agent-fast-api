@@ -108,6 +108,10 @@ Both wait for the user's approval.
   `Limit: no limit → 50,000 tokens`, plus this month's usage. `describe_*` in
   `account_tools.py` reads the current value when the approval is created. It uses a
   blocking connection because the middleware calls its description function without `await`.
+- **The page reads JSON, not wording.** The card text is `{"title", "details"}` and a
+  tool's answer is `{"changed", "message"}` (`_card` and `_result` in `account_tools.py`;
+  `parseApprovalCard` and `parseAccountResult` in `lib/agent-tools.ts`, with tests). Keep
+  the two sides in step. Anything else shows as plain text or as the raw tool card.
 - **Invalid values never reach the user.** `when=needs_approval` skips the card for a
   name that is empty or too long, or a limit outside 1,000 to 10 billion tokens (the
   same limits as `parseBudget` in `lib/usage.ts`). The tool itself then answers with
@@ -137,7 +141,7 @@ servers fetch the pages, never this one.
   `{"error": ...}`, so the reply goes on instead of failing.
 
 The page shows these calls as "Searched “query” · 5 results" and "Read 2
-pages", with the sources as links (`webToolView` in `components/agent-chat.tsx`).
+pages", with the sources as links (`components/chat/tool-call.tsx`).
 
 The system prompt is built for every model call (`dynamic_prompt`) and includes
 today's date. Without it Gemini trusted its training: asked for the latest

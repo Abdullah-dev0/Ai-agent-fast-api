@@ -173,20 +173,17 @@ export function AgentChat({ threadId }: { threadId: string }) {
 					{approvals.length > 0 && (
 						<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 rounded-2xl bg-surface p-3 pl-4">
 							<div className="flex min-w-0 flex-col gap-2 text-sm">
-								{approvals.map((approval) => {
-									// First line is the title; the rest are the details, e.g. "Name: Abdullah → Abdul".
-									const [title, ...details] = (approval.description || "").split("\n");
-									return (
-										<div key={approval.id}>
-											<p className="font-medium">{title || "The agent needs your approval to continue."}</p>
-											{details.map((line) => (
-												<p key={line} className="text-muted">
-													{line}
-												</p>
-											))}
-										</div>
-									);
-								})}
+								{approvals.map(({ id, card }) => (
+									<div key={id}>
+										<p className="font-medium">{card.title || "The agent needs your approval to continue."}</p>
+										{/* Detail lines, e.g. "Name: Abdullah → Abdul". */}
+										{card.details.map((line) => (
+											<p key={line} className="text-muted">
+												{line}
+											</p>
+										))}
+									</div>
+								))}
 							</div>
 							<div className="flex shrink-0 gap-2">
 								<button

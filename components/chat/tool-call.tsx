@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ACCOUNT_SETTINGS } from "@/lib/agent-tools";
+import { ACCOUNT_SETTINGS, parseAccountResult } from "@/lib/agent-tools";
 import type { Part } from "@/lib/use-agent-chat";
 import { ChevronIcon, CloudIcon, GlobeIcon, ToolIcon } from "./icons";
 
@@ -61,8 +61,9 @@ function accountView(part: ToolPart, running: boolean): View | null {
 	if (part.result === undefined) {
 		return running ? { icon, label: `Changing ${what}`, pulse: true } : { icon, label: `Did not change ${what}` };
 	}
-	const changed = !part.result.startsWith("Not changed");
-	return { icon, label: `${changed ? "Changed" : "Did not change"} ${what}`, body: note(part.result) };
+	const result = parseAccountResult(part.result);
+	if (!result) return null; // Not the JSON we expect: the raw card shows it as it is.
+	return { icon, label: `${result.changed ? "Changed" : "Did not change"} ${what}`, body: note(result.message) };
 }
 
 type Source = { url: string; title?: string };

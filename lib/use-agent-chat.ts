@@ -11,6 +11,7 @@ import {
 	type TokenUsage,
 } from "@ag-ui/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { parseApprovalCard, type ApprovalCard } from "./agent-tools";
 
 // Our own chat hook for the Python agent server (agent-server/main.py).
 // The server streams AG-UI events (https://docs.ag-ui.com); @ag-ui/client's
@@ -45,7 +46,8 @@ export type Approval = {
 	toolCallId: string;
 	name: string;
 	args: Record<string, unknown>;
-	description: string;
+	// What the card says: parseApprovalCard of the tool's description.
+	card: ApprovalCard;
 };
 
 // What paused the run: LangChain's approval request, which the adapter keeps in an
@@ -57,7 +59,9 @@ function toApprovals(interrupts: Interrupt[]): Approval[] {
 	return interrupts.flatMap((i) => {
 		const raw: ApprovalRequest | undefined = i.metadata?.langgraph?.raw;
 		if (raw?.type !== "tool_approval") return [];
-		return [{ id: i.id, toolCallId: i.toolCallId ?? "", name: raw.name, args: raw.args, description: raw.description }];
+		return [
+			{ id: i.id, toolCallId: i.toolCallId ?? "", name: raw.name, args: raw.args, card: parseApprovalCard(raw.description) },
+		];
 	});
 }
 

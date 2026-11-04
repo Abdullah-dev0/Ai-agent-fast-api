@@ -6,6 +6,7 @@ runs one fixed SQL statement. The model only supplies the new value. Both tools 
 approval-gated in agent.py, and the approval card shows the real before and after.
 """
 
+import json
 import os
 
 import psycopg
@@ -41,6 +42,18 @@ def check_limit(limit: int | None) -> str | None:
     return None
 
 
+def _result(changed: bool, message: str) -> str:
+    """What a tool answers with: JSON, so the page reads `changed` instead of the wording.
+    The page side is parseAccountResult in lib/agent-tools.ts."""
+    return json.dumps({"changed": changed, "message": message}, ensure_ascii=False)
+
+
+def _card(title: str, *details: str) -> str:
+    """The text of an approval card: a title and detail lines, as JSON.
+    The page side is parseApprovalCard in lib/agent-tools.ts."""
+    return json.dumps({"title": title, "details": list(details)}, ensure_ascii=False)
+
+
 def _thread_id() -> str:
     return get_config()["configurable"]["thread_id"]
 
@@ -52,7 +65,7 @@ def account_tools(pool: AsyncConnectionPool) -> list:
         Use it only when the user asks to change their own name. They must approve it first."""
         new_name, problem = clean_name(name)
         if problem:
-            return f"Not changed: {problem}"
+            return _result(False, problem)
         async with pool.connection() as db:
             cursor = await db.execute(
                 # One statement: find the user through this chat, then update that user only.
@@ -66,8 +79,8 @@ def account_tools(pool: AsyncConnectionPool) -> list:
             )
             row = await cursor.fetchone()
         if row is None:
-            return "Not changed: could not find your account."
-        return f"Display name changed from {row['old_name']!r} to {new_name!r}."
+            return _result(False, "Could not find your account.")
+        return _result(True, f"Display name changed from {row['old_name']!r} to {new_name!r}.")
 
     @tool
     async def set_token_budget(monthly_token_limit: int | None) -> str:
@@ -76,7 +89,7 @@ def account_tools(pool: AsyncConnectionPool) -> list:
         the user asks to change their own limit. They must approve it first."""
         problem = check_limit(monthly_token_limit)
         if problem:
-            return f"Not changed: {problem}"
+            return _result(False, problem)
         async with pool.connection() as db:
             if monthly_token_limit is None:
                 await db.execute(
@@ -95,10 +108,10 @@ def account_tools(pool: AsyncConnectionPool) -> list:
                 )
                 found = cursor.rowcount == 1
         if not found:
-            return "Not changed: could not find your account."
+            return _result(False, "Could not find your account.")
         if monthly_token_limit is None:
-            return "The monthly token limit is removed."
-        return f"The monthly token limit is now {monthly_token_limit:,} tokens."
+            return _result(True, "The monthly token limit is removed.")
+        return _result(True, f"The monthly token limit is now {monthly_token_limit:,} tokens.")
 
     return [update_my_profile, set_token_budget]
 
@@ -118,7 +131,7 @@ def describe_profile_change(tool_call, state, runtime) -> str:
         """SELECT u.name FROM "user" u JOIN chats c ON c.user_id = u.id WHERE c.id = %s"""
     )
     old_name = row["name"] if row else "unknown"
-    return f"Change your display name\nName: {old_name} → {new_name}"
+    return _card("Change your display name", f"Name: {old_name} → {new_name}")
 
 
 def describe_budget_change(tool_call, state, runtime) -> str:
@@ -133,12 +146,12 @@ def describe_budget_change(tool_call, state, runtime) -> str:
     )
     before = f"{row['current_limit']:,} tokens" if row and row["current_limit"] else "no limit"
     after = "no limit" if limit is None else f"{limit:,} tokens"
-    lines = ["Change your monthly token limit", f"Limit: {before} → {after}"]
+    details = [f"Limit: {before} → {after}"]
     used = int(row["used"]) if row else 0
-    lines.append(f"Used this month: {used:,} tokens")
+    details.append(f"Used this month: {used:,} tokens")
     if limit is not None and used >= limit:
-        lines.append("You have already used this much, so chat stops as soon as you approve.")
-    return "\n".join(lines)
+        details.append("You have already used this much, so chat stops as soon as you approve.")
+    return _card("Change your monthly token limit", *details)
 
 
 def needs_approval(request) -> bool:
