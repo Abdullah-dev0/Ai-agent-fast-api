@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { THINKING_LEVELS, type ThinkingLevel } from "@/lib/use-agent-chat";
+import { THINKING_LEVELS, type ThinkingLevel } from "@/lib/chat-types";
 import { ArrowUpIcon } from "./icons";
 
 export function Composer({

@@ -1,4 +1,4 @@
-import type { ContextUsage } from "@/lib/use-agent-chat";
+import type { ContextUsage } from "@/lib/chat-types";
 
 const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
 

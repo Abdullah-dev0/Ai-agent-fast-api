@@ -11,49 +11,22 @@ import {
 	type TokenUsage,
 } from "@ag-ui/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { parseApprovalCard, type ApprovalCard } from "./agent-tools";
+import { parseApprovalCard } from "./agent-tools";
+import type {
+	Approval,
+	ApprovalRequest,
+	ChatMessage,
+	ContextUsage,
+	Part,
+	SavedChat,
+	ThinkingLevel,
+} from "./chat-types";
 
 // Our own chat hook for the Python agent server (agent-server/main.py).
 // The server streams AG-UI events (https://docs.ag-ui.com); @ag-ui/client's
 // HttpAgent reads them and this hook turns them into messages. It sends only the
 // new message: the server keeps the whole conversation in its checkpointer,
-// keyed by threadId.
-
-// The same shapes agent-server/history.py returns, so a reloaded chat looks like
-// a live one. One assistant message per reply; its parts in the order they came.
-export type Part =
-	| { type: "text"; id: string; text: string }
-	| { type: "reasoning"; id: string; text: string }
-	// No `result`: the tool has not run (yet).
-	| { type: "tool"; id: string; name: string; args?: string; result?: string };
-
-// Tokens a reply used, over all its model calls. Missing if the provider reported none.
-export type Usage = { input: number; output: number };
-
-export type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[]; usage?: Usage };
-
-// How full the model's context is after its latest call (context_usage in
-// agent-server/agent.py). limit is null when the model's limit is not known.
-export type ContextUsage = { used: number; limit: number | null };
-
-// How hard the model thinks before a reply: Gemini's levels (agent-server/agent.py).
-export const THINKING_LEVELS = ["minimal", "low", "medium", "high"] as const;
-export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
-
-// A tool waiting for the user's OK (HumanInTheLoopMiddleware in agent.py).
-export type Approval = {
-	id: string;
-	toolCallId: string;
-	name: string;
-	args: Record<string, unknown>;
-	// What the card says: parseApprovalCard of the tool's description.
-	card: ApprovalCard;
-};
-
-// What paused the run: LangChain's approval request, which the adapter keeps in an
-// AG-UI interrupt's metadata.langgraph.raw (GET /agent returns the same shape). The
-// interrupt itself carries the id and toolCallId.
-type ApprovalRequest = { type?: string; name: string; args: Record<string, unknown>; description: string };
+// keyed by threadId. The shapes it uses are in chat-types.ts.
 
 function toApprovals(interrupts: Interrupt[]): Approval[] {
 	return interrupts.flatMap((i) => {
@@ -77,24 +50,27 @@ function addUsage(messages: ChatMessage[], runUsage: TokenUsage[]): ChatMessage[
 	return [...messages.slice(0, -1), { ...last, usage }];
 }
 
-// The SDK accumulates the protocol transcript for us. Use its current assistant
-// tool calls to fill arguments when the provider snapshot contains them but the
-// stream did not send TOOL_CALL_ARGS deltas.
-function applyToolArgs(parts: Part[], messages: readonly Message[]): Part[] {
-	const args = new Map(
-		messages
-			.flatMap((m) => (m.role === "assistant" ? (m.toolCalls ?? []) : []))
-			.filter((call) => call.function.arguments.length > 0)
-			.map((call) => [call.id, call.function.arguments] as const),
-	);
-	if (!parts.some((part) => part.type === "tool" && part.args === undefined && args.has(part.id))) return parts;
-	return parts.map((part) =>
-		part.type === "tool" && part.args === undefined ? { ...part, args: args.get(part.id) } : part,
-	);
+// Fills in what only the end-of-run MESSAGES_SNAPSHOT (the whole thread) carries:
+// Gemini streams no TOOL_CALL_ARGS, and a denied tool's result is never streamed.
+function fillFromSnapshot(parts: Part[], messages: readonly Message[]): Part[] {
+	const args = new Map<string, string>();
+	const results = new Map<string, string>();
+	for (const m of messages) {
+		if (m.role === "assistant") for (const call of m.toolCalls ?? []) args.set(call.id, call.function.arguments);
+		if (m.role === "tool") results.set(m.toolCallId, contentToText(m.content));
+	}
+	const filled = parts.map((p) => {
+		if (p.type !== "tool") return p;
+		const next = { ...p, args: p.args ?? (args.get(p.id) || undefined), result: p.result ?? results.get(p.id) };
+		return next.args === p.args && next.result === p.result ? p : next;
+	});
+	return filled.some((p, i) => p !== parts[i]) ? filled : parts;
 }
 
 // Adds one streamed event to the parts of the reply. Returns the same array when
-// the event changes nothing, so React skips the render.
+// the event changes nothing, so React skips the render. The SDK keeps its own copy
+// of the thread too, but its order breaks once a snapshot arrives, so the page
+// builds the reply here, from the events alone.
 function applyEvent(parts: Part[], event: AGUIEvent): Part[] {
 	switch (event.type) {
 		case EventType.TEXT_MESSAGE_CONTENT:
@@ -104,6 +80,8 @@ function applyEvent(parts: Part[], event: AGUIEvent): Part[] {
 			if (at === -1) return [...parts, { type, id: event.messageId, text: event.delta }];
 			return parts.map((p, i) => (i === at && p.type === type ? { ...p, text: p.text + event.delta } : p));
 		}
+		case EventType.MESSAGES_SNAPSHOT:
+			return fillFromSnapshot(parts, event.messages);
 		case EventType.TOOL_CALL_START:
 			// A resumed run starts the paused call again and resends its arguments, so
 			// clear the first copy. The end-of-run snapshot fills them in if none come.
@@ -153,7 +131,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	const [started, setStarted] = useState(false); // the reply has shown something
 	const [error, setError] = useState<Error>();
 	// One agent per chat. Its own message list is only what the next run sends;
-	// the page builds the messages it shows from the events.
+	// the page builds the messages it shows from the events (applyEvent).
 	const agent = useMemo(() => new HttpAgent({ url, threadId }), [url, threadId]);
 	const approvals = useMemo(() => toApprovals(interrupts), [interrupts]);
 	// Set when a run ends with RUN_FINISHED and no approval left to answer; run() reads it.
@@ -168,7 +146,7 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		const controller = new AbortController();
 		fetch(`${url}?threadId=${encodeURIComponent(threadId)}`, { signal: controller.signal })
 			.then((res) => (res.ok ? res.json() : Promise.reject(new Error(`Could not load the chat (${res.status})`))))
-			.then((data: { messages: ChatMessage[]; context: ContextUsage | null; interrupts: Interrupt[] }) => {
+			.then((data: SavedChat) => {
 				setMessages(data.messages);
 				setContext(data.context);
 				setInterrupts(data.interrupts);
@@ -197,16 +175,6 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 			},
 			onCustomEvent: ({ event }) => {
 				if (event.name === "context_usage") setContext(event.value as ContextUsage);
-			},
-			// This fires after the SDK has applied each event to its protocol message
-			// list, so snapshots and tool-call argument accumulation have one owner.
-			onMessagesChanged: ({ messages }) => {
-				setMessages((ms) => {
-					const last = ms.at(-1);
-					if (last?.role !== "assistant") return ms;
-					const parts = applyToolArgs(last.parts, messages);
-					return parts === last.parts ? ms : [...ms.slice(0, -1), { ...last, parts }];
-				});
 			},
 			// The SDK has already parsed and validated the event; show the ones the page
 			// displays. Only something it shows ends "Thinking…", not step events.
@@ -313,7 +281,6 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		context,
 		loading,
 		running,
-		// Waiting for the first piece of the reply.
 		thinking: running && !started,
 		error,
 		send,

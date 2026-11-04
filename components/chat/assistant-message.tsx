@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { ChatMessage, Part } from "@/lib/use-agent-chat";
+import type { ChatMessage, Part } from "@/lib/chat-types";
 import { CheckIcon, ChevronIcon, CopyIcon } from "./icons";
 import { MARKDOWN, MarkdownText } from "./markdown";
 import { ToolCall } from "./tool-call";

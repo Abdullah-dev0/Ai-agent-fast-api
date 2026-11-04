@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ACCOUNT_SETTINGS, parseAccountResult } from "@/lib/agent-tools";
-import type { Part } from "@/lib/use-agent-chat";
+import type { Part } from "@/lib/chat-types";
 import { ChevronIcon, CloudIcon, GlobeIcon, ToolIcon } from "./icons";
 
 type ToolPart = Extract<Part, { type: "tool" }>;

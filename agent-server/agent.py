@@ -125,7 +125,7 @@ def system_prompt_with_date(request: ModelRequest) -> str:
     )
 
 
-# The thinking levels, the same list as THINKING_LEVELS in use-agent-chat.ts.
+# The thinking levels, the same list as THINKING_LEVELS in lib/chat-types.ts.
 # Gemini's own levels; OpenRouter and OpenAI accept them as reasoning efforts.
 THINKING_LEVELS = {"minimal", "low", "medium", "high"}
 
