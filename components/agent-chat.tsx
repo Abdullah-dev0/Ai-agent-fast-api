@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { DELETE_CHAT_TOOL } from "@/lib/agent-tools";
 import { deleteChat, touchChat } from "@/lib/actions";
@@ -26,7 +26,7 @@ function savedThinking(): ThinkingLevel {
 }
 
 // The chat UI for the Python agent server. All the talking to the server
-// (streaming, approvals, history, stop) is in useAgentChat.
+// (streaming, approvals, history, stop) is in useAgentChat, on the AI SDK's useChat.
 export function AgentChat({ threadId }: { threadId: string }) {
 	const router = useRouter();
 	const [input, setInput] = useState("");
@@ -52,9 +52,6 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	});
 	// The run is paused until the user answers: a new message would not fit.
 	const paused = approvals.length > 0;
-	// The tool calls waiting for an answer. Memoized: a new array on every render
-	// would make every AssistantMessage (a memo) re-render on every streamed token.
-	const waiting = useMemo(() => approvals.map((a) => a.toolCallId), [approvals]);
 
 	// Follow the reply as it streams, but only while the user is at the bottom:
 	// scrolling up to read stops the following.
@@ -182,7 +179,6 @@ export function AgentChat({ threadId }: { threadId: string }) {
 								message={message}
 								streaming={running && message === last}
 								latest={message === last}
-								waiting={waiting}
 							/>
 						),
 					)}

@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import NotRequired
 
-from ag_ui_langgraph import LangGraphAgent
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import (
     ClearToolUsesEdit,
@@ -28,7 +27,6 @@ from langchain_core.callbacks import adispatch_custom_event
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.config import get_config
-from langgraph.types import Command
 from psycopg_pool import AsyncConnectionPool
 
 from account_tools import (
@@ -68,9 +66,9 @@ if not MODEL_NAME:
 # Settings only some providers have. Any other provider gets the defaults below.
 # timeout: give up on one call after 60 s instead of waiting forever. OpenRouter's
 # is in milliseconds.
-# include_thoughts: Gemini also returns summaries of its reasoning. The AG-UI
-# adapter streams them as REASONING events; main.py passes on only their start
-# and end, so the page shows "Thinking…" and "Thought for 4s", not the text.
+# include_thoughts: Gemini also returns summaries of its reasoning. ui_stream.py
+# passes on only that it started and ended, so the page shows "Thinking…" and
+# "Thought for 4s", not the text.
 # (Gemini reads GOOGLE_API_KEY, then GEMINI_API_KEY, the same key as the Next.js app.)
 # stream_usage: OpenAI only reports token counts on a stream when asked. Without
 # them no token_usage row is saved, so the monthly limit would never stop the chat.
@@ -145,8 +143,8 @@ def thinking_setting(level: str) -> dict:
 
 
 class ChatState(AgentState):
-    # The level picked on the page, sent in RunAgentInput.state. It is saved with
-    # the thread, so a run resumed after an approval keeps it.
+    # The level picked on the page, sent with each message (main.py). It is saved
+    # with the thread, so a run resumed after an approval keeps it.
     thinking_level: NotRequired[str]
 
 
@@ -171,7 +169,7 @@ def context_limit(model_name: str) -> int | None:
 def context_usage(message: AIMessage) -> dict:
     """How full the context is after this model call. Every call resends the whole
     conversation, so this call's input plus its output is what the next one carries.
-    Not the sum over calls that token_usage and the reply's usage row add up."""
+    Not the sum over calls that the token_usage rows add up."""
     usage = message.usage_metadata
     return {
         "used": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
@@ -281,12 +279,11 @@ NO_CHAT_MESSAGE = "This chat no longer exists. Start a new chat to keep talking.
 
 
 async def answer_without_model(text: str) -> AIMessage:
-    """A fixed reply in place of a model call. A message made here is never streamed
-    (the AG-UI adapter only turns the model's own stream into text events), so the page
-    would show nothing until a reload. This event makes the adapter send it now. Same id
-    as the saved message, so the reload does not show it twice."""
+    """A fixed reply in place of a model call. Only the model's own stream becomes text
+    on the page, so a message made here would show nothing until a reload. This event
+    makes ui_stream.py send it now."""
     message = AIMessage(content=text, id=str(uuid.uuid4()))
-    await adispatch_custom_event("manually_emit_message", {"message_id": message.id, "message": text})
+    await adispatch_custom_event("fixed_reply", {"message_id": message.id, "text": text})
     return message
 
 
@@ -370,46 +367,4 @@ def build_graph(checkpointer: BaseCheckpointSaver, pool: AsyncConnectionPool):
         # Saves the conversation after every step, per thread_id (also needed
         # for interrupts: the paused run is resumed from the saved state).
         checkpointer=checkpointer,
-    )
-
-
-class ChatAgent(LangGraphAgent):
-    """LangGraphAgent with a resume LangGraph accepts when several approvals are open.
-
-    The adapter's default packs two or more answers into its own
-    {"__agui_resume_map__": ...} wrapper, which nothing on the LangGraph side reads,
-    so LangGraph fails with "you must specify the interrupt id when resuming".
-    LangGraph's own format is {interrupt_id: answer}; the adapter documents this
-    method as the one subclasses override to build it.
-    """
-
-    def _build_command_from_agui_resume(self, entries, *, open_interrupts=None) -> Command:
-        # per_call mode: each answer is one decision. A cancelled entry is a reject.
-        return Command(
-            resume={
-                e.interrupt_id: e.payload if e.status == "resolved" else {"type": "reject"}
-                for e in entries
-            }
-        )
-
-
-def build_agui_agent(graph) -> LangGraphAgent:
-    """Wrap the graph so it streams AG-UI events (what the page's useAgentChat reads)."""
-    return ChatAgent(
-        name="assistant",
-        description="Chat agent with tools",
-        graph=graph,
-        # RAW events copy LangGraph's internal events for debugging only and
-        # are most of the bytes on the wire; the page does not need them.
-        emit_raw_events=False,
-        # At most 25 graph steps per run (LangGraph's default), so a model that
-        # keeps calling tools cannot loop forever. One tool round trip is 3 steps
-        # (model, the approval check, tools); a search, a read and the answer
-        # take about 8.
-        config={"recursion_limit": 25},
-        # When the agent pauses for approval, end the run with RUN_FINISHED
-        # outcome "interrupt" and accept the answer in RunAgentInput.resume[]:
-        # the standard AG-UI way.
-        emit_interrupt_outcome=True,
-        enable_legacy_on_interrupt_event=False,
     )

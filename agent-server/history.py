@@ -1,58 +1,59 @@
 """Turn a LangGraph thread into the chat the page shows after a reload.
 
-The shape matches what the page's useAgentChat hook builds from the live
-stream, so a reloaded chat looks the same as a live one:
+The messages are AI SDK UIMessages, the same shape useChat builds from the live
+stream (ui_stream.py), so a reloaded chat looks the same as a live one:
 
-    { id, role: "user" | "assistant", parts: [...], usage?: { input, output } }
+    { id, role: "user" | "assistant", parts: [...] }
 
-One assistant entry per reply: the AI messages and tool results between two
+One assistant message per reply: the AI messages and tool results between two
 user messages are merged into it, in order. Parts:
 
-    { type: "text", id, text }
-    { type: "tool", id, name, args, result?, failed? }   (no result: not run yet;
-        failed: the result has status "error", e.g. the user denied the call)
+    { type: "text", text, state: "done" }
+    { type: "dynamic-tool", toolCallId, toolName, input, state, ... }
+        state "output-available" with `output`; "output-error" with `errorText`
+        (the tool failed, or the user denied it); "approval-requested" with
+        `approval` (still waiting for the user); "input-available" (never ran,
+        e.g. the reply was stopped)
 
 No reasoning parts: the page shows reasoning only as "Thought for 4s", timed while
 it streams, and a saved chat has no timing to show (nor is the text ever sent).
 """
 
-import json
-
 from langchain.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
-
-def text_of(content) -> str:
-    """Message text, whether LangChain stored it as a string or a list of parts."""
-    if isinstance(content, str):
-        return content
-    return "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+from ui_stream import text_of
 
 
-def to_ui_messages(messages: list[AnyMessage]) -> list[dict]:
+def tool_part(call: dict, result: ToolMessage | None, interrupt) -> dict:
+    part = {"type": "dynamic-tool", "toolCallId": call["id"], "toolName": call["name"], "input": call["args"]}
+    if result is not None and result.status == "error":
+        part.update(state="output-error", errorText=text_of(result.content))
+    elif result is not None:
+        part.update(state="output-available", output=text_of(result.content))
+    elif interrupt is not None:
+        # Same as a live tool-approval-request (ui_stream.py).
+        part.update(state="approval-requested", approval={"id": interrupt.id, "requestReason": interrupt.value.get("description", "")})
+    else:
+        part.update(state="input-available")
+    return part
+
+
+def to_ui_messages(messages: list[AnyMessage], interrupts: list) -> list[dict]:
     # A tool's result is its own message in LangGraph; on the page it belongs on
     # the tool call that asked for it.
     results = {m.tool_call_id: m for m in messages if isinstance(m, ToolMessage)}
+    waiting = {i.value["tool_call_id"]: i for i in interrupts if isinstance(i.value, dict) and "tool_call_id" in i.value}
     ui: list[dict] = []
     for m in messages:
         if isinstance(m, HumanMessage):
-            ui.append({"id": m.id, "role": "user", "parts": [{"type": "text", "id": m.id, "text": text_of(m.content)}]})
+            ui.append({"id": m.id, "role": "user", "parts": [{"type": "text", "text": text_of(m.content)}]})
         elif isinstance(m, AIMessage):
             if not ui or ui[-1]["role"] != "assistant":
                 ui.append({"id": m.id, "role": "assistant", "parts": []})
             parts = ui[-1]["parts"]
-            for call in m.tool_calls:
-                part = {"type": "tool", "id": call["id"], "name": call["name"], "args": json.dumps(call["args"])}
-                if (result := results.get(call["id"])) is not None:
-                    part["result"] = text_of(result.content)
-                    if result.status == "error":
-                        part["failed"] = True
-                parts.append(part)
+            # Text first, as it streams: a model call's tool calls are sent at its end.
             if text := text_of(m.content):
-                parts.append({"type": "text", "id": m.id, "text": text})
-            # One reply can be several model calls (a tool round trip): add them up,
-            # as the live RUN_FINISHED does. No usage reported: no "usage" key.
-            if m.usage_metadata:
-                usage = ui[-1].setdefault("usage", {"input": 0, "output": 0})
-                usage["input"] += m.usage_metadata.get("input_tokens", 0)
-                usage["output"] += m.usage_metadata.get("output_tokens", 0)
+                parts.append({"type": "text", "text": text, "state": "done"})
+            for call in m.tool_calls:
+                parts.append(tool_part(call, results.get(call["id"]), waiting.get(call["id"])))
     return [m for m in ui if m["parts"]]
