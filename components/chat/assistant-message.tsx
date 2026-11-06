@@ -47,23 +47,16 @@ export const AssistantMessage = memo(function AssistantMessage({
 					return <ToolCall key={part.id} part={part} running={streaming} />;
 				return null;
 			})}
-			{!streaming && !paused && (text || message.usage) && (
+			{!streaming && !paused && text && (
 				// Like ChatGPT: older replies show this row on hover. Touch screens,
 				// which cannot hover, always show it.
 				<div
 					className={`flex min-h-8 items-center gap-2 transition-opacity focus-within:opacity-100 ${
 						latest ? "" : "[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/reply:opacity-100"
 					}`}>
-					{text && (
-						<div className="-ml-2">
-							<CopyButton text={text} />
-						</div>
-					)}
-					{message.usage && (
-						<span title="Tokens used for this reply" className="text-xs text-muted">
-							{message.usage.input.toLocaleString()} input · {message.usage.output.toLocaleString()} output tokens
-						</span>
-					)}
+					<div className="-ml-2">
+						<CopyButton text={text} />
+					</div>
 				</div>
 			)}
 		</div>
