@@ -66,6 +66,14 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		[sendMessage],
 	);
 
+	// useChat's stop only closes this page's connection: the reply runs on in the
+	// server (agent-server/runs.py, so leaving the page does not end it), so Stop
+	// tells the server too.
+	const stopReply = useCallback(() => {
+		stop();
+		fetch(`${url}/stop?threadId=${encodeURIComponent(threadId)}`, { method: "POST" }).catch(() => {});
+	}, [stop, url, threadId]);
+
 	// One answer for every waiting approval, through useChat's raw resume
 	// (langgraph-approvals.ts says why).
 	const answer = useCallback(
@@ -92,6 +100,6 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		error: chat.error ? new Error(REPLY_FAILED) : undefined,
 		send,
 		answer,
-		stop,
+		stop: stopReply,
 	};
 }

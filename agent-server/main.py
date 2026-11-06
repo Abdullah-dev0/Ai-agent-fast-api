@@ -1,14 +1,18 @@
 """FastAPI server that exposes the LangGraph agent over AG-UI.
 
-POST   /agent                 run the agent; streams AG-UI events (the page's
-                              useAgentChat reads them). Then deletes the thread if
-                              its chat is gone (the delete_chat_history tool).
-GET    /agent?threadId=...    the saved chat and any approval still waiting
+POST   /agent                 start a reply; streams its AG-UI events (the page's
+                              useAgentChat reads them). When it is over, deletes the
+                              thread if its chat is gone (the delete_chat_history tool).
+GET    /agent?threadId=...    the saved chat, the reply still running and any
+                              approval still waiting
+GET    /agent?runId=...       join a running reply: its events from the start, then live
+POST   /agent/stop?threadId=  the Stop button: ends the chat's running reply
 DELETE /agent?threadId=...    clear that chat from the agent's memory
 GET    /agent/health          simple health check
 
-The reply runs inside the POST request: closing the page (or the Stop button)
-stops it. Steps it already finished stay saved in the checkpointer.
+The reply runs in the background (runs.py): closing the page or switching chats does
+not stop it, and the page joins it again when it comes back. Only the Stop button
+ends it. Steps it already finished stay saved in the checkpointer.
 """
 
 import asyncio
@@ -19,18 +23,19 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from ag_ui.core import BaseEvent, EventType, MessagesSnapshotEvent
+from ag_ui.core import BaseEvent, EventType, MessagesSnapshotEvent, RunErrorEvent
 from ag_ui.core.types import RunAgentInput
 from ag_ui.encoder import EventEncoder
 from ag_ui_langgraph.interrupts import lg_interrupt_to_agui
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+import runs
 from history import to_ui_messages
 
 # Reuse the Next.js app's .env: GEMINI_API_KEY and DATABASE_URL live there.
@@ -58,10 +63,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 logger = logging.getLogger(__name__)
-
-# Cleanups still running. asyncio keeps only a weak reference to a task, so one
-# nobody holds can be garbage-collected before it finishes.
-_cleanups: set[asyncio.Task] = set()
 
 
 async def forget_deleted_chat(app: FastAPI, thread_id: str):
@@ -91,28 +92,37 @@ def without_reasoning_text(event: BaseEvent) -> BaseEvent | None:
 
 @app.post("/agent")
 async def run_agent(input_data: RunAgentInput, request: Request):
-    """The same as ag-ui-langgraph's add_langgraph_fastapi_endpoint, plus the cleanup."""
+    """The same as ag-ui-langgraph's add_langgraph_fastapi_endpoint, but the run goes
+    on in the background (runs.py) and this response only follows it."""
+    if runs.active_run(input_data.thread_id):
+        return JSONResponse({"error": "This chat is already replying."}, status_code=409)
+    app = request.app
     encoder = EventEncoder(accept=request.headers.get("accept"))
-    # One copy per request: the adapter keeps per-run state on the instance.
-    agent = request.app.state.agent.clone()
+    # One copy per run: the adapter keeps per-run state on the instance.
+    agent = app.state.agent.clone()
     # useChat sends a message's extra data (sendMessage's body) in forwardedProps;
     # the agent reads the thinking level from its state (ChatState in agent.py).
     if level := (input_data.forwarded_props or {}).get("thinkingLevel"):
         input_data = input_data.model_copy(update={"state": {**(input_data.state or {}), "thinking_level": level}})
 
-    async def events():
+    async def work(run: runs.Run):
         try:
             async for event in agent.run(input_data):
                 if (event := without_reasoning_text(event)) is not None:
-                    yield encoder.encode(event)
+                    await run.publish(event)
+        except Exception as error:
+            logger.exception("Run failed in thread %s", input_data.thread_id)
+            await run.publish(RunErrorEvent(message=str(error)))
         finally:
-            # A task, not an await: when the page closes mid-reply this request is
-            # cancelled, and an await here would be cancelled with it.
-            task = asyncio.create_task(forget_deleted_chat(request.app, input_data.thread_id))
-            _cleanups.add(task)
-            task.add_done_callback(_cleanups.discard)
+            await forget_deleted_chat(app, input_data.thread_id)
 
-    return StreamingResponse(events(), media_type=encoder.get_content_type())
+    run = runs.start(input_data.thread_id, input_data.run_id, work)
+    return StreamingResponse(run.follow(encoder), media_type=encoder.get_content_type())
+
+
+@app.post("/agent/stop")
+async def stop_reply(threadId: str):
+    return {"stopped": runs.stop(threadId)}
 
 
 @app.get("/agent/health")
@@ -121,6 +131,20 @@ def health():
 
 
 @app.get("/agent")
+async def agent_get(request: Request, threadId: str | None = None, runId: str | None = None):
+    """useChat asks two things of this URL: ?threadId= is the saved chat on load,
+    ?runId= (with offset=-1) joins the reply that is running."""
+    if runId:
+        run = runs.run_by_id(runId)
+        if run is None:  # over already: the saved chat has it all
+            return JSONResponse({"error": "No such run."}, status_code=404)
+        encoder = EventEncoder(accept=request.headers.get("accept"))
+        return StreamingResponse(run.follow(encoder), media_type=encoder.get_content_type())
+    if threadId is None:
+        return JSONResponse({"error": "threadId or runId is required."}, status_code=422)
+    return await chat_history(threadId, request)
+
+
 async def chat_history(threadId: str, request: Request):
     """The saved chat, in the shape useChat's `persistence: true` loads it in
     (TanStack AI's ChatHydrationResult). It may add limit/before for paging;
@@ -131,9 +155,16 @@ async def chat_history(threadId: str, request: Request):
     config = {"configurable": {"thread_id": threadId}}
     state = await request.app.state.graph.aget_state(config)
     pending = [i for task in state.tasks for i in task.interrupts]
+    messages = to_ui_messages(state.values.get("messages", []))
+    run = runs.active_run(threadId)
+    if run:
+        # The page rebuilds the reply that is still running from the run's own events
+        # (the join above), so what the checkpointer has of it is left out here.
+        last_user = max((i for i, m in enumerate(messages) if m["role"] == "user"), default=-1)
+        messages = messages[: last_user + 1]
     return {
-        "messages": to_ui_messages(state.values.get("messages", [])),
-        "activeRun": None,  # a reply runs inside its POST request: none to rejoin
+        "messages": messages,
+        "activeRun": {"runId": run.run_id} if run else None,
         # Approvals still waiting for an answer, so a reloaded page shows them again.
         # useChat needs a run id with them; LangGraph saves none, so this names the
         # checkpoint the run paused at (the adapter resumes from the latest anyway).

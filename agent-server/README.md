@@ -44,17 +44,21 @@ streamed events ("run started", "a piece of text", "tool called", "reasoning",
 
 | Route | What it does |
 |---|---|
-| `POST /agent` | Runs the agent and streams the reply. `ag-ui-langgraph`'s `add_langgraph_fastapi_endpoint`. |
-| `GET /agent?threadId=` | `{ messages, interrupts }`: the saved chat and any approval still waiting. |
+| `POST /agent` | Starts a reply and streams it. Like `ag-ui-langgraph`'s `add_langgraph_fastapi_endpoint`, but the run goes on in the background (`runs.py`). 409 if the chat is already replying. |
+| `GET /agent?threadId=` | `{ messages, activeRun, interrupts }`: the saved chat, the reply still running (its own steps left out: the join below sends them) and any approval still waiting. |
+| `GET /agent?runId=&offset=-1` | Joins a running reply: all its events from the start, then live. 404 once it is over (the saved chat has it all). |
+| `POST /agent/stop?threadId=` | The Stop button: ends the chat's running reply. |
 | `DELETE /agent?threadId=` | Deletes the thread (the Delete chat button, and after an approved `delete_chat_history`). The page then removes the `chats` row. |
 | `GET /agent/health` | Health check. |
 
-The reply runs inside the POST request. **Stop** (or closing the page) closes
-the connection, and that stops the reply. Steps it already finished stay saved,
-so a reload shows them. A reload during a reply does not rejoin it. Switching to
-another chat does not stop the reply: Next keeps the last 3 pages alive but hidden.
-Past that, the page is dropped, the reply still finishes, and coming back while it
-runs shows only what is saved so far.
+The reply runs in the background, not inside the POST request: the response only
+follows it. Closing the page, a reload or switching chats does not stop it. When
+the page comes back, `useChat` loads the chat, sees `activeRun`, joins with
+`?runId=` and rebuilds the reply from the run's events. Only **Stop** ends a
+reply. Steps it already finished stay saved. The runs are in memory, so
+restarting the server loses the ones going. One known gap: joining a reply that
+was resumed after an approval shows only the part after the approval until it
+ends (a reload then shows it all).
 
 ## The page's side (`lib/use-agent-chat.ts`)
 
