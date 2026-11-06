@@ -45,6 +45,9 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	const [thinkingLevel, setThinkingLevel] = useState(savedThinking);
 	const [deleting, startDelete] = useTransition();
 	const [deleteError, setDeleteError] = useState<string>();
+	// The answer just given, shown at once while the server resumes. Tied to the
+	// approvals it answered, so it is gone when they are.
+	const [answered, setAnswered] = useState<{ to: unknown; approved: boolean }>();
 	const {
 		messages,
 		approvals,
@@ -91,6 +94,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	// transition: React would hold back the hook's updates (the card clearing,
 	// `running`) until the whole reply and the refresh were done.
 	async function decide(approved: boolean) {
+		setAnswered({ to: approvals, approved });
 		const deletes = approvals.some((a) => a.name === DELETE_CHAT_TOOL);
 		await answer(approved);
 		if (!approved) return;
@@ -216,22 +220,27 @@ export function AgentChat({ threadId }: { threadId: string }) {
 									</div>
 								))}
 							</div>
-							<div className="flex shrink-0 gap-2">
-								<button
-									type="button"
-									onClick={() => void decide(false)}
-									disabled={running}
-									className="rounded-full bg-hover px-4 py-1.5 text-sm hover:opacity-80 disabled:opacity-50">
-									Deny
-								</button>
-								<button
-									type="button"
-									onClick={() => void decide(true)}
-									disabled={running}
-									className="rounded-full bg-foreground px-4 py-1.5 text-sm font-medium text-background hover:opacity-85 disabled:opacity-50">
-									Approve
-								</button>
-							</div>
+							{answered?.to === approvals ? (
+								// Shown at once; the card goes when the reply continues.
+								<span className="shrink-0 text-sm text-muted">{answered.approved ? "Approved" : "Denied"}</span>
+							) : (
+								<div className="flex shrink-0 gap-2">
+									<button
+										type="button"
+										onClick={() => void decide(false)}
+										disabled={running}
+										className="rounded-full bg-hover px-4 py-1.5 text-sm hover:opacity-80 disabled:opacity-50">
+										Deny
+									</button>
+									<button
+										type="button"
+										onClick={() => void decide(true)}
+										disabled={running}
+										className="rounded-full bg-foreground px-4 py-1.5 text-sm font-medium text-background hover:opacity-85 disabled:opacity-50">
+										Approve
+									</button>
+								</div>
+							)}
 						</div>
 					)}
 
