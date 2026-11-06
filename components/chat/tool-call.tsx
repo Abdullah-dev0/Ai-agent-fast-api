@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import { ACCOUNT_SETTINGS, DELETE_CHAT_TOOL, parseAccountResult } from "@/lib/agent-tools";
-import type { Part } from "@/lib/chat-types";
+import type { ToolStep } from "@/lib/chat-types";
 import { ChevronIcon, CloudIcon, GlobeIcon, ToolIcon, TrashIcon } from "./icons";
 
-type ToolPart = Extract<Part, { type: "tool" }>;
+type ToolPart = ToolStep;
 
 // How one tool call looks: an icon and a line that opens to show `body`.
 // No `body` means there is nothing to open.

@@ -4,12 +4,24 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { DELETE_CHAT_TOOL } from "@/lib/agent-tools";
 import { deleteChat, touchChat } from "@/lib/actions";
-import { THINKING_LEVELS, type ThinkingLevel } from "@/lib/chat-types";
+import { THINKING_LEVELS, type ChatMessage, type ThinkingLevel } from "@/lib/chat-types";
 import { useAgentChat } from "@/lib/use-agent-chat";
 import { AssistantMessage } from "./chat/assistant-message";
 import { Composer } from "./chat/composer";
 import { ContextMeter } from "./chat/context-meter";
 import { TrashIcon } from "./chat/icons";
+
+// Each user message, and each reply: useChat starts a new assistant message after
+// every tool round, so a reply is the assistant messages in a row.
+function toTurns(messages: readonly ChatMessage[]): ChatMessage[][] {
+	const turns: ChatMessage[][] = [];
+	for (const m of messages) {
+		const prev = turns.at(-1);
+		if (m.role === "assistant" && prev?.[0].role === "assistant") prev.push(m);
+		else turns.push([m]);
+	}
+	return turns;
+}
 
 const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL ?? "http://127.0.0.1:8123/agent";
 const THINKING_KEY = "agent-chat-thinking";
@@ -144,7 +156,8 @@ export function AgentChat({ threadId }: { threadId: string }) {
 			</div>
 		);
 
-	const last = messages.at(-1);
+	const turns = toTurns(messages);
+	const last = turns.at(-1);
 	return (
 		<div className="flex h-full min-h-0 flex-col">
 			<div className="flex h-12 shrink-0 items-center justify-end gap-3 px-3 max-md:pl-14">
@@ -169,19 +182,19 @@ export function AgentChat({ threadId }: { threadId: string }) {
 				}}
 				className="min-h-0 flex-1 overflow-y-auto">
 				<div className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-4 pt-4 pb-8">
-					{messages.map((message) =>
-						message.role === "user" ? (
+					{turns.map((turn) =>
+						turn[0].role === "user" ? (
 							<div
-								key={message.id}
+								key={turn[0].id}
 								className="max-w-[85%] self-end rounded-3xl bg-surface px-5 py-2.5 break-words whitespace-pre-wrap sm:max-w-[75%]">
-								{message.parts.map((p) => (p.type === "text" ? p.text : null))}
+								{turn[0].parts.map((p) => (p.type === "text" ? p.content : null))}
 							</div>
 						) : (
 							<AssistantMessage
-								key={message.id}
-								message={message}
-								streaming={running && message === last}
-								latest={message === last}
+								key={turn[0].id}
+								messages={turn}
+								streaming={running && turn === last}
+								latest={turn === last}
 								waiting={waiting}
 							/>
 						),

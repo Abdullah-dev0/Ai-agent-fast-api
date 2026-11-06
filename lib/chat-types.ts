@@ -1,32 +1,25 @@
-import type { Interrupt } from "@ag-ui/core";
+import type { UIMessage } from "@tanstack/ai-react";
 import type { ApprovalCard } from "./agent-tools";
 
 // The shapes the chat page works with (useAgentChat in use-agent-chat.ts).
 
-// The same shapes agent-server/history.py returns, so a reloaded chat looks like
-// a live one. One assistant message per reply; its parts in the order they came.
-export type Part =
-	| { type: "text"; id: string; text: string }
-	// That the model thought, without what: like ChatGPT, its reasoning text stays on
-	// the server (main.py). Live only, timed from its start and end events for
-	// "Thought for 4s"; a reloaded chat has none (history.py).
-	| { type: "reasoning"; id: string; startedAt?: number; seconds?: number }
-	// No `result`: the tool has not run (yet). `failed`: the result is a failure
-	// (status "error" on the server), e.g. the user denied the call; its text is
-	// then written for the model, not for the user.
-	| { type: "tool"; id: string; name: string; args?: string; result?: string; failed?: boolean };
+// A message as TanStack AI's useChat builds it from the stream, and as GET /agent
+// returns it (history.py). Its parts the page shows: text, tool-call, tool-result.
+// useChat starts a new assistant message after each tool round, so one reply can be
+// several assistant messages in a row: the page shows them as one.
+export type ChatMessage = UIMessage;
 
-// Tokens a reply used, over all its model calls. Missing if the provider reported none.
-export type Usage = { input: number; output: number };
-
-export type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[]; usage?: Usage };
+// One tool call as tool-call.tsx shows it: the call and its result put together.
+// No `result`: the tool has not run (yet). `failed`: the result is a failure, e.g.
+// the user denied the call; its text is then written for the model, not for the user.
+export type ToolStep = { id: string; name: string; args?: string; result?: string; failed?: boolean };
 
 // How full the model's context is after its latest call (context_usage in
 // agent-server/agent.py). limit is null when the model's limit is not known.
 export type ContextUsage = { used: number; limit: number | null };
 
 // What GET /agent returns (main.py): the saved chat and any approval still waiting.
-export type SavedChat = { messages: ChatMessage[]; context: ContextUsage | null; interrupts: Interrupt[] };
+export type SavedChat = { messages: ChatMessage[]; context: ContextUsage | null; interrupts: AgentInterrupt[] };
 
 // How hard the model thinks before a reply: Gemini's levels (agent-server/agent.py).
 // A value, not only a type: the selector lists these, and ThinkingLevel comes from it.
@@ -43,7 +36,20 @@ export type Approval = {
 	card: ApprovalCard;
 };
 
-// What paused the run: LangChain's approval request, which the adapter keeps in an
-// AG-UI interrupt's metadata.langgraph.raw (GET /agent returns the same shape). The
-// interrupt itself carries the id and toolCallId.
-export type ApprovalRequest = { type?: string; name: string; args: Record<string, unknown>; description: string };
+// What paused the run: LangChain's approval request, which ag-ui-langgraph keeps in
+// an AG-UI interrupt's metadata.langgraph.raw (GET /agent returns the same shape).
+export type ApprovalRequest = {
+	type?: string;
+	tool_call_id?: string;
+	name: string;
+	args: Record<string, unknown>;
+	description: string;
+};
+
+// The part of an AG-UI interrupt the page reads: from GET /agent, or live from
+// TanStack's useChat (its "unbound" interrupts carry the same id and metadata).
+export type AgentInterrupt = {
+	id: string;
+	toolCallId?: string;
+	metadata?: Readonly<{ langgraph?: { raw?: ApprovalRequest } }>;
+};

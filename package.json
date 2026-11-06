@@ -12,8 +12,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ag-ui/client": "1.0.3",
-    "@ag-ui/core": "1.0.3",
+    "@tanstack/ai": "1.0.0",
+    "@tanstack/ai-client": "1.0.0",
+    "@tanstack/ai-react": "1.0.0",
     "better-auth": "^1.7.7",
     "next": "16.4.3",
     "pg": "^8.23.1",
