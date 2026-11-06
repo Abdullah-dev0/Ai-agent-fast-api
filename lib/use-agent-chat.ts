@@ -2,8 +2,8 @@
 
 import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { parseApprovalCard } from "./agent-tools";
-import type { AgentInterrupt, Approval, ContextUsage, ThinkingLevel } from "./chat-types";
+import type { AgentInterrupt, ContextUsage, ThinkingLevel } from "./chat-types";
+import { resumeItems, waitingApprovals } from "./langgraph-approvals";
 
 // The chat with the Python agent server (agent-server/main.py), on TanStack AI's
 // useChat: it reads the server's AG-UI events (ag-ui-langgraph) as they are.
@@ -12,17 +12,6 @@ import type { AgentInterrupt, Approval, ContextUsage, ThinkingLevel } from "./ch
 // turn (the checkpointer has the rest). This adds the context meter and approvals.
 
 const REPLY_FAILED = "Something went wrong with that reply. Try again.";
-const NO_APPROVALS: Approval[] = []; // one value, so an empty list never counts as a change
-
-function toApprovals(interrupts: readonly AgentInterrupt[]): Approval[] {
-	const approvals = interrupts.flatMap((i) => {
-		const raw = i.metadata?.langgraph?.raw;
-		if (raw?.type !== "tool_approval") return [];
-		const toolCallId = i.toolCallId ?? raw.tool_call_id ?? "";
-		return [{ id: i.id, toolCallId, name: raw.name, args: raw.args, card: parseApprovalCard(raw.description) }];
-	});
-	return approvals.length ? approvals : NO_APPROVALS;
-}
 
 export function useAgentChat({ url, threadId }: { url: string; threadId: string }) {
 	// From the context_usage events of a reply: a reloaded chat shows none until the next.
@@ -59,16 +48,13 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		onError: (e) => console.error("Agent run failed:", e),
 	});
 	const { messages, sendMessage, resumeInterruptsUnsafe, stop, isLoading } = chat;
-	// The user's answer per tool call (true: approved). TanStack keeps an interrupt
-	// until the resumed run ends, since answer() goes around it, so the hook keeps
-	// the answers: `approvals` lists only the calls still waiting for one.
+	// The user's answer per tool call (true: approved). The approvals are off
+	// TanStack's documented path: see langgraph-approvals.ts.
 	const [decisions, setDecisions] = useState<ReadonlyMap<string, boolean>>(new Map());
-	const approvals = useMemo(() => {
-		const waiting = toApprovals(chat.interrupts as readonly AgentInterrupt[]).filter(
-			(a) => !decisions.has(a.toolCallId),
-		);
-		return waiting.length ? waiting : NO_APPROVALS;
-	}, [chat.interrupts, decisions]);
+	const approvals = useMemo(
+		() => waitingApprovals(chat.interrupts as readonly AgentInterrupt[], decisions),
+		[chat.interrupts, decisions],
+	);
 
 	useEffect(() => {
 		lastUser.current = messages.findLast((m) => m.role === "user")?.id;
@@ -80,18 +66,12 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		[sendMessage],
 	);
 
-	// One answer for every waiting approval: AG-UI resumes all open interrupts at once.
-	// TanStack resumes only interrupts its own server made, so this is its raw resume.
+	// One answer for every waiting approval, through useChat's raw resume
+	// (langgraph-approvals.ts says why).
 	const answer = useCallback(
 		(approved: boolean) => {
 			setDecisions((m) => new Map([...m, ...approvals.map((a) => [a.toolCallId, approved] as const)]));
-			return resumeInterruptsUnsafe(
-				approvals.map((a) => ({
-					interruptId: a.id,
-					status: "resolved" as const,
-					payload: { type: approved ? "approve" : "reject" },
-				})),
-			);
+			return resumeInterruptsUnsafe(resumeItems(approvals, approved));
 		},
 		[approvals, resumeInterruptsUnsafe],
 	);

@@ -2,6 +2,7 @@
 
 import { memo, useState } from "react";
 import type { Approval, ChatMessage, ToolStep } from "@/lib/chat-types";
+import { withoutReplayedToolCalls } from "@/lib/langgraph-approvals";
 import { ApprovalRequest } from "./approval-request";
 import { CheckIcon, CopyIcon } from "./icons";
 import { MARKDOWN, MarkdownText } from "./markdown";
@@ -34,13 +35,8 @@ export const AssistantMessage = memo(function AssistantMessage({
 	seconds,
 	reasoning,
 }: Props) {
-	// One step per tool call: a run resumed after an approval starts the paused call
-	// again (ag-ui-langgraph), so useChat has it twice until the end-of-run snapshot.
-	// The newest copy has the latest state.
-	const all = messages.flatMap((m) => m.parts);
-	const parts = all.filter(
-		(p, i) => p.type !== "tool-call" || !all.slice(i + 1).some((q) => q.type === "tool-call" && q.id === p.id),
-	);
+	// One step per tool call (langgraph-approvals.ts says why there can be two).
+	const parts = withoutReplayedToolCalls(messages.flatMap((m) => m.parts));
 	// A tool's result is its own part, often in a later message than its call.
 	const results = new Map(parts.flatMap((p) => (p.type === "tool-result" ? [[p.toolCallId, p] as const] : [])));
 	const text = parts.flatMap((p) => (p.type === "text" ? [p.content] : [])).join("\n\n");

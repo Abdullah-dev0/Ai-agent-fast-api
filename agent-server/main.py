@@ -137,6 +137,7 @@ async def chat_history(threadId: str, request: Request):
         # Approvals still waiting for an answer, so a reloaded page shows them again.
         # useChat needs a run id with them; LangGraph saves none, so this names the
         # checkpoint the run paused at (the adapter resumes from the latest anyway).
+        # Off TanStack's documented path, like lib/langgraph-approvals.ts.
         "interrupts": {
             "runId": state.config["configurable"]["checkpoint_id"],
             "pending": [lg_interrupt_to_agui(i).model_dump(by_alias=True, exclude_none=True) for i in pending],
