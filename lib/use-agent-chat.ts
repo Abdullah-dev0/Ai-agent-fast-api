@@ -27,7 +27,6 @@ function toApprovals(interrupts: readonly AgentInterrupt[]): Approval[] {
 export function useAgentChat({ url, threadId }: { url: string; threadId: string }) {
 	// From the context_usage events of a reply: a reloaded chat shows none until the next.
 	const [context, setContext] = useState<ContextUsage | null>(null);
-	const outcome = useRef<string | null>(null); // how the last run ended, for answer()
 	// "Thought for 4s": timed from the reasoning start and end events (main.py keeps
 	// the text on the server). Seconds per reply, keyed by the user message it
 	// answers. Live only: a reloaded chat has no timing.
@@ -44,8 +43,6 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		history: { pageSize: 50 },
 		onCustomEvent: (name, data) => name === "context_usage" && setContext(data as ContextUsage),
 		onChunk: (chunk) => {
-			if (chunk.type === "RUN_FINISHED") outcome.current = chunk.outcome?.type ?? "success";
-			if (chunk.type === "RUN_ERROR") outcome.current = "failed";
 			if (chunk.type === "REASONING_MESSAGE_START" && lastUser.current) {
 				thought.current = { key: lastUser.current, start: Date.now() };
 				setThinkingFor(lastUser.current);
@@ -73,21 +70,17 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		[sendMessage],
 	);
 
-	// The user's decision for each waiting approval, sent once all have one (AG-UI
-	// resumes every open interrupt at once). TanStack resumes only interrupts its own
-	// server made, so this is its raw resume. Resolves true if the resumed reply
-	// completed (not failed, stopped or paused again).
+	// One answer for every waiting approval: AG-UI resumes all open interrupts at once.
+	// TanStack resumes only interrupts its own server made, so this is its raw resume.
 	const answer = useCallback(
-		async (decisions: ReadonlyMap<string, boolean>) => {
-			const resume = approvals.map((a) => ({
-				interruptId: a.id,
-				status: "resolved" as const,
-				payload: { type: decisions.get(a.id) ? "approve" : "reject" },
-			}));
-			outcome.current = null;
-			await resumeInterruptsUnsafe(resume);
-			return outcome.current === "success";
-		},
+		(approved: boolean) =>
+			resumeInterruptsUnsafe(
+				approvals.map((a) => ({
+					interruptId: a.id,
+					status: "resolved" as const,
+					payload: { type: approved ? "approve" : "reject" },
+				})),
+			),
 		[approvals, resumeInterruptsUnsafe],
 	);
 

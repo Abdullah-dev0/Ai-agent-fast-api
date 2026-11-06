@@ -174,9 +174,10 @@ TOOLS = [
 
 
 def chat_tools(pool: AsyncConnectionPool) -> list:
-    # return_direct: the reply ends with this tool, no model call after it, so nothing
-    # is written to a chat that no longer exists.
-    @tool(return_direct=True)
+    # No return_direct: after a denied call the model replies ("OK, I kept it").
+    # After a deletion the next model call never reaches the model: budget_guard in
+    # agent.py finds no chat row and answers "This chat no longer exists" for free.
+    @tool
     async def delete_chat_history() -> str:
         """Delete this whole conversation, every message, for good. Use it only when
         the user asks to delete or clear the chat. The user must approve it first."""

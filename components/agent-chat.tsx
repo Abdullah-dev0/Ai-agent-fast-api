@@ -45,8 +45,6 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	const [thinkingLevel, setThinkingLevel] = useState(savedThinking);
 	const [deleting, startDelete] = useTransition();
 	const [deleteError, setDeleteError] = useState<string>();
-	// The user's pick per waiting approval (by id), until all have one and it is sent.
-	const [decisions, setDecisions] = useState<ReadonlyMap<string, boolean>>(new Map());
 	const {
 		messages,
 		approvals,
@@ -89,31 +87,17 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		await deleteChat(threadId);
 	}
 
-	// Each approval gets its own answer. The run resumes once every one has one.
-	// Not in a transition: React would hold back the hook's state updates (the cards
-	// clearing, `running`) until the whole reply and the refresh were done.
-	async function decide(id: string, approved: boolean) {
-		const next = new Map(decisions).set(id, approved);
-		if (!approvals.every((a) => next.has(a.id))) {
-			setDecisions(next);
-			return;
-		}
-		setDecisions(new Map());
-		const deleteApproved = approvals.some((a) => a.name === DELETE_CHAT_TOOL && next.get(a.id));
-		// Resolves when the server has closed the stream, so the agent is done writing.
-		const completed = await answer(next);
+	// One answer for every waiting approval (two at once is rare). Not in a
+	// transition: React would hold back the hook's updates (the card clearing,
+	// `running`) until the whole reply and the refresh were done.
+	async function decide(approved: boolean) {
+		const deletes = approvals.some((a) => a.name === DELETE_CHAT_TOOL);
+		await answer(approved);
+		if (!approved) return;
 		// The tool deleted the chat on the server: leave it and update the list.
-		if (deleteApproved && completed) return deleteChat(threadId);
-		// An approved tool may have changed the name or limit shown by server
-		// components (sidebar, Usage page): fetch them again.
-		if ([...next.values()].some(Boolean)) router.refresh();
-	}
-
-	// Takes back an answer before the rest are in.
-	function undecide(id: string) {
-		const next = new Map(decisions);
-		next.delete(id);
-		setDecisions(next);
+		if (deletes) return deleteChat(threadId);
+		// The tool may have changed what server components show (name, limit).
+		router.refresh();
 	}
 
 	function submit() {
@@ -218,10 +202,10 @@ export function AgentChat({ threadId }: { threadId: string }) {
 						))}
 
 					{approvals.length > 0 && (
-						<div className="flex flex-col gap-4 rounded-2xl bg-surface p-3 pl-4">
-							{approvals.map(({ id, card }) => (
-								<div key={id} className="flex w-full flex-wrap items-center justify-between gap-x-4 gap-y-3">
-									<div className="flex min-w-0 flex-col gap-0.5 text-sm">
+						<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 rounded-2xl bg-surface p-3 pl-4">
+							<div className="flex min-w-0 flex-col gap-3 text-sm">
+								{approvals.map(({ id, card }) => (
+									<div key={id} className="flex flex-col gap-0.5">
 										<p className="font-medium">{card.title || "The agent needs your approval to continue."}</p>
 										{/* Detail lines, e.g. "Name: Abdullah → Abdul". */}
 										{card.details.map((line) => (
@@ -230,45 +214,24 @@ export function AgentChat({ threadId }: { threadId: string }) {
 											</p>
 										))}
 									</div>
-									{decisions.has(id) ? (
-										// Answered, but the run waits for the rest: say so, and allow a change.
-										<div className="flex shrink-0 items-center gap-2 text-sm">
-											<span className="text-muted">{decisions.get(id) ? "Approved" : "Denied"}</span>
-											<button
-												type="button"
-												onClick={() => undecide(id)}
-												disabled={running}
-												className="rounded-full px-3 py-1.5 text-muted hover:bg-hover hover:text-foreground disabled:opacity-50">
-												Change
-											</button>
-										</div>
-									) : (
-										<div className="flex shrink-0 gap-2">
-											<button
-												type="button"
-												onClick={() => void decide(id, false)}
-												disabled={running}
-												className="rounded-full bg-hover px-4 py-1.5 text-sm hover:opacity-80 disabled:opacity-50">
-												Deny
-											</button>
-											<button
-												type="button"
-												onClick={() => void decide(id, true)}
-												disabled={running}
-												className="rounded-full bg-foreground px-4 py-1.5 text-sm font-medium text-background hover:opacity-85 disabled:opacity-50">
-												Approve
-											</button>
-										</div>
-									)}
-								</div>
-							))}
-							{approvals.length > 1 && (
-								<p className="text-xs text-muted">
-									{decisions.size === 0
-										? "Answer each one. The agent continues once all are answered."
-										: `${approvals.length - decisions.size} more to answer, then the agent continues.`}
-								</p>
-							)}
+								))}
+							</div>
+							<div className="flex shrink-0 gap-2">
+								<button
+									type="button"
+									onClick={() => void decide(false)}
+									disabled={running}
+									className="rounded-full bg-hover px-4 py-1.5 text-sm hover:opacity-80 disabled:opacity-50">
+									Deny
+								</button>
+								<button
+									type="button"
+									onClick={() => void decide(true)}
+									disabled={running}
+									className="rounded-full bg-foreground px-4 py-1.5 text-sm font-medium text-background hover:opacity-85 disabled:opacity-50">
+									Approve
+								</button>
+							</div>
 						</div>
 					)}
 

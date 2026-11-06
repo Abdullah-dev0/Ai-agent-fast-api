@@ -83,8 +83,8 @@ fills in what Gemini does not stream, like tool arguments). The hook adds:
 2. The page shows Approve / Deny. The answer is a new run with AG-UI's `resume`
    field: `[{ interruptId, status: "resolved", payload: { type: "approve" | "reject" } }]`.
    The adapter passes the payload to the middleware as `Command(resume=...)`.
-   AG-UI requires one `resume` to answer every open interrupt, so the page sends
-   it once every approval has an answer. TanStack's own approvals only work with
+   AG-UI requires one `resume` to answer every open interrupt, so one Approve /
+   Deny answers all of them (two at once is rare). TanStack's own approvals only work with
    interrupts its own server made (these arrive "unbound"), so the hook sends the
    answers with its raw `resumeInterruptsUnsafe`.
 3. Deny: the tool does not run, and Gemini is told so. Approve: the tool runs,
