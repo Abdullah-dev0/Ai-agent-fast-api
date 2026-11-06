@@ -1,8 +1,9 @@
 # Agent server (Python)
 
 **Aragon**, a LangChain agent (Gemini by default, see "Changing the model"; twelve tools, web search included) served
-by FastAPI. The Next.js app's `/agent` page talks to it with the AI SDK's
-`useChat`, wrapped in `useAgentChat` (`lib/use-agent-chat.ts`).
+by FastAPI over AG-UI. The
+Next.js app's `/agent` page talks to it with our own React hook,
+`useAgentChat` (`lib/use-agent-chat.ts`).
 
 ## Run it
 
@@ -24,30 +25,27 @@ Then, in the project root, `npm run dev`, sign in and open **Agent**.
 |---|---|
 | `tools.py` | The tools: current time, weather (Open-Meteo), a safe calculator, `web_search` and `read_webpage` (Tavily), and `delete_chat_history`, which needs the user's approval. |
 | `account_tools.py` | `update_my_profile` and `set_token_budget`: change the signed-in user's own display name and monthly token limit, after approval. See "Tools that change your data". |
-| `agent.py` | The agent: LangChain's `create_agent`, its name and system prompt (with today's date), and `HumanInTheLoopMiddleware` for the approval. |
-| `main.py` | The API: run the agent, plus history and clear. |
-| `ui_stream.py` | Turns one LangGraph run into the AI SDK's UI message stream, the format `useChat` reads. |
-| `history.py` | Turns a saved thread into the messages the page shows after a reload, in the same shape `useChat` builds from the live stream. |
+| `agent.py` | The agent: LangChain's `create_agent`, its name and system prompt (with today's date), and `HumanInTheLoopMiddleware` for the approval. Also the AG-UI wrapper. |
+| `main.py` | The API: `ag-ui-langgraph`'s endpoint to run the agent, plus history and clear. |
+| `history.py` | Turns a saved thread into the messages the page shows after a reload, in the same shape `useAgentChat` builds from the live stream. |
 
 ## How one message travels
 
 ```
-Browser (useChat) ──POST /agent──> FastAPI ──> create_agent (LangGraph) ──> Gemini + tools
-   ^                                  │                │
-   └──── UI message stream (SSE) ─────┘                └── saves every step in Postgres (checkpointer)
+Browser (useAgentChat) ──POST /agent──> FastAPI ──> create_agent (LangGraph) ──> Gemini + tools
+   ^                                       │                │
+   └──────── AG-UI events (SSE) ───────────┘                └── saves every step in Postgres (checkpointer)
 ```
 
-The **UI message stream** (https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) is
-the AI SDK's format: one JSON chunk per `data:` line ("text-delta", "tool input
-available", "tool output available", "approval request", ...). `ui_stream.py`
-reads the run's `astream_events` and writes those chunks; `useChat` builds the
-messages from them. There is no library in between: `ui_stream.py` is the whole
-adapter, about 200 lines.
+**AG-UI** (https://docs.ag-ui.com) is the shared language: a standard list of
+streamed events ("run started", "a piece of text", "tool called", "reasoning",
+"run finished"). `ag-ui-langgraph` turns the agent's output into those events;
+`useAgentChat` reads them.
 
 | Route | What it does |
 |---|---|
-| `POST /agent` | Runs the agent and streams the reply. The body is `{ threadId, messageId, text, thinkingLevel }` for a new message, or `{ threadId, approvals: [{ id, approved }] }` to answer the approvals the run waits on. |
-| `GET /agent?threadId=` | `{ messages, context }`: the saved chat (with any approval still waiting) and how full the context is. |
+| `POST /agent` | Runs the agent and streams the reply. `ag-ui-langgraph`'s `add_langgraph_fastapi_endpoint`. |
+| `GET /agent?threadId=` | `{ messages, interrupts }`: the saved chat and any approval still waiting. |
 | `DELETE /agent?threadId=` | Deletes the thread (the Delete chat button, and after an approved `delete_chat_history`). The page then removes the `chats` row. |
 | `GET /agent/health` | Health check. |
 
@@ -60,40 +58,40 @@ runs shows only what is saved so far.
 
 ## The page's side (`lib/use-agent-chat.ts`)
 
-- **Send:** `useChat`'s `sendMessage`. `prepareSendMessagesRequest` sends **only
-  the new message**: the checkpointer already has the conversation.
-- **Read:** `useChat` builds one assistant message per reply from the stream. Its
-  parts: `text`, `reasoning` (no text) and `dynamic-tool` (the page knows the tools
-  by name only). `data-context` chunks are transient: they update the context
-  meter and are not kept.
-- **Tool arguments:** Gemini sends a tool call's name and arguments together, so
-  `ui_stream.py` sends each call once its model call ends
-  (`tool-input-start` + `tool-input-available`).
-- **Stop:** `useChat`'s `stop`, which aborts the request.
-- **Load:** `GET /agent?threadId=` on mount, then `setMessages`. `history.py`
-  returns the same message shape, so a reloaded chat looks like a live one.
+- **Send:** an AG-UI `RunAgentInput` with the `threadId`, a new `runId` and
+  **only the new message**. The checkpointer already has the conversation, and
+  the adapter adds any message it has not saved yet.
+- **Read:** text, reasoning and tool events become the parts of one assistant
+  message per reply (`text`, `reasoning`, `tool`); step and state events are
+  ignored.
+- **Tool arguments:** the adapter sends no `TOOL_CALL_ARGS` for Gemini (its
+  first chunk holds the tool's name and arguments together), so the hook takes
+  them from the `MESSAGES_SNAPSHOT` at the end of the run. Nothing else is read
+  from the snapshot.
+- **Stop:** aborts the request.
+- **Load:** `GET /agent?threadId=` on mount. `history.py` returns the same
+  message shape, so a reloaded chat looks like a live one.
 
 ## Approvals
 
 1. Gemini calls `delete_chat_history`. `HumanInTheLoopMiddleware`
    (`interrupt_mode="per_call"`) pauses the run with
-   `{ type: "tool_approval", tool_call_id, name, args, description }`. Once the run
-   stops, `ui_stream.py` reads the waiting interrupts from the saved state and sends
-   a `tool-approval-request` per call: `approvalId` is the interrupt's id, `reason`
-   is the card's text.
-2. The page shows Approve / Deny. Once every one has an answer, it calls
-   `addToolApprovalResponse` for each, then `sendMessage()` with no message: the
-   request is `{ approvals: [{ id, approved }] }`. `main.py` resumes the run with
-   `Command(resume={interrupt_id: {"type": "approve" | "reject"}})`. An approval the
-   page did not answer counts as denied.
-3. Deny: the tool does not run, and Gemini is told so. The middleware answers without
-   running the tool, so nothing streams for it: `ui_stream.py` sends
-   `tool-output-denied` from the saved state. Approve: the tool runs, and when the
-   reply ends the page leaves the deleted chat.
+   `{ type: "tool_approval", name, args, description }`. The run ends with
+   `RUN_FINISHED` outcome `interrupt` (`emit_interrupt_outcome=True`).
+2. The page shows Approve / Deny. The answer is a new run with AG-UI's `resume`
+   field: `[{ interruptId, status: "resolved", payload: { type: "approve" | "reject" } }]`.
+   The adapter passes the payload to the middleware as `Command(resume=...)`.
+   AG-UI requires one `resume` to answer every open interrupt, so the page
+   answers all of them with one decision (two at once is rare).
+3. Deny: the tool does not run, and Gemini is told so. Approve: the tool runs,
+   and when the reply ends the page calls `DELETE /agent` and clears the screen.
 
 A waiting approval is saved by the checkpointer, so after a reload
-`GET /agent?threadId=` returns its tool part as `approval-requested` and the buttons
-come back.
+`GET /agent?threadId=` returns it (as AG-UI interrupts, the same shape as in
+`RUN_FINISHED`) and the buttons come back.
+
+A denied call streams no result (the middleware answers without running the
+tool), so the page labels it "Not run" until a reload shows the reason.
 
 ## Tools that change your data (`account_tools.py`)
 
@@ -165,7 +163,7 @@ model to break such rules.
 
 Set `MODEL` in the root `.env` as `provider:model` (LangChain's `init_chat_model`
 names). Without it the agent uses `USE_OPENROUTER`/`OPENROUTER_MODEL` if set, else
-`google_genai:gemini-3.5-flash`. The page does not change: it only sees the UI message stream.
+`google_genai:gemini-3.5-flash`. The page does not change: it only sees AG-UI events.
 
 ```bash
 # .env
@@ -193,9 +191,10 @@ reason at all may reject the setting.
 `include_thoughts=True` makes Gemini return summaries of its reasoning. Like
 ChatGPT, the page shows only that the model thought and for how long, never the
 text: some providers send their raw reasoning, not a summary. So the text never
-leaves the server: `ui_stream.py` sends only `reasoning-start` and `reasoning-end`,
-and times it: the end carries the seconds (`providerMetadata.aragon.seconds`). The
-page shows one line per reply: "Thinking…", then "Thought for 4s". A reloaded chat has no timing, so `history.py` sends no
+leaves the server: `main.py` drops `REASONING_MESSAGE_CONTENT` events and the
+reasoning messages in `MESSAGES_SNAPSHOT`. The page times the reasoning from
+its start and end events and shows one line per reply: "Thinking…", then
+"Thought for 4s". A reloaded chat has no timing, so `history.py` sends no
 reasoning parts and the line is left out.
 
 ## Long chats
@@ -235,6 +234,6 @@ to be kept beside the chat instead, not in place of it.
 - LangChain: "Agents" (`create_agent`) and "Human-in-the-loop" (`HumanInTheLoopMiddleware`, `per_call`) at docs.langchain.com
 - LangChain: "Prebuilt middleware" (`ContextEditingMiddleware`, `SummarizationMiddleware`) at docs.langchain.com
 - LangGraph: Postgres checkpointer, interrupts at docs.langchain.com
-- AI SDK: "Stream protocol" (UI message stream), `useChat`, tool approvals (`addToolApprovalResponse`) at ai-sdk.dev
+- AG-UI: events, `RunAgentInput`, interrupts and `resume` at docs.ag-ui.com
 - Gemini in LangChain: `langchain-google-genai` (`include_thoughts`; reads `GOOGLE_API_KEY`, then `GEMINI_API_KEY`)
-- `ai` (`UIMessageChunk`, `UIToolInvocation` states) in `node_modules/ai/dist/index.d.ts`
+- `ag-ui-langgraph` (`add_langgraph_fastapi_endpoint`, interrupts, `RunAgentInput.resume`) in `.venv`

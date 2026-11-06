@@ -12,8 +12,8 @@ async function UserChat({ params }: { params: Promise<{ id: string }> }) {
 	return <AgentChat key={chat.id} threadId={chat.id} />;
 }
 
-// A LangGraph agent in Python (agent-server/), streamed to the AI SDK's useChat
-// (lib/use-agent-chat.ts).
+// A LangGraph agent in Python (agent-server/), streamed over AG-UI to our own
+// useAgentChat hook (lib/use-agent-chat.ts).
 export default function ChatPage({ params }: { params: Promise<{ id: string }> }) {
 	return (
 		<Suspense fallback={<p className="animate-pulse pt-16 text-center text-sm text-muted">Loading chat…</p>}>

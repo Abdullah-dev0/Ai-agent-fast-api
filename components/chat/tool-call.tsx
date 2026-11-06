@@ -1,22 +1,9 @@
 import type { ReactNode } from "react";
 import { ACCOUNT_SETTINGS, DELETE_CHAT_TOOL, parseAccountResult } from "@/lib/agent-tools";
-import type { ToolPart } from "@/lib/chat-types";
+import type { Part } from "@/lib/chat-types";
 import { ChevronIcon, CloudIcon, GlobeIcon, ToolIcon, TrashIcon } from "./icons";
 
-// One tool call as the views below read it. `result` is missing while the tool has
-// not run (yet). `failed`: it did not run as asked (denied, or it broke); its text
-// is then written for the model, not for the user.
-type Step = { name: string; input: Record<string, unknown>; result?: string; failed?: boolean };
-
-function toStep(part: ToolPart): Step {
-	const input = part.input && typeof part.input === "object" ? (part.input as Record<string, unknown>) : {};
-	const step = { name: part.toolName, input };
-	if (part.state === "output-available")
-		return { ...step, result: typeof part.output === "string" ? part.output : JSON.stringify(part.output) };
-	if (part.state === "output-error") return { ...step, result: part.errorText, failed: true };
-	if (part.state === "output-denied") return { ...step, result: "", failed: true };
-	return step;
-}
+type ToolPart = Extract<Part, { type: "tool" }>;
 
 // How one tool call looks: an icon and a line that opens to show `body`.
 // No `body` means there is nothing to open.
@@ -27,8 +14,7 @@ type View = { icon: ReactNode; label: ReactNode; pulse?: boolean; body?: ReactNo
 // so it is never shown: the line just says the step did not happen.
 // A call waiting for approval is not shown at all (Steps leaves it out): the card
 // under the reply already says what is being asked.
-export function ToolCall({ part: toolPart, running }: { part: ToolPart; running: boolean }) {
-	const part = toStep(toolPart);
+export function ToolCall({ part, running }: { part: ToolPart; running: boolean }) {
 	// Tools we know get a sentence; any other tool gets its name.
 	const view =
 		weatherView(part, running) ??
@@ -59,7 +45,7 @@ function note(text: string) {
 // The three sentences of a step: while it runs, once it is done, and when it did
 // not happen (no result, or a failed one). `body` opens only under `done`.
 function stepView(
-	part: Step,
+	part: ToolPart,
 	running: boolean,
 	icon: ReactNode,
 	words: { running: string; done: string; notDone: string },
@@ -73,9 +59,9 @@ function stepView(
 
 // --- Tools from agent-server/tools.py and account_tools.py ---
 
-function weatherView(part: Step, running: boolean): View | null {
+function weatherView(part: ToolPart, running: boolean): View | null {
 	if (part.name !== "get_weather") return null;
-	const { city } = part.input as { city?: string | null };
+	const { city } = parseJson<{ city?: string | null }>(part.args) ?? {};
 	const where = city ? ` in ${city}` : "";
 	return stepView(
 		part,
@@ -86,9 +72,9 @@ function weatherView(part: Step, running: boolean): View | null {
 	);
 }
 
-function timeView(part: Step, running: boolean): View | null {
+function timeView(part: ToolPart, running: boolean): View | null {
 	if (part.name !== "get_current_time") return null;
-	const { timezone } = part.input as { timezone?: string };
+	const { timezone } = parseJson<{ timezone?: string }>(part.args) ?? {};
 	const where = timezone ? ` in ${timezone}` : "";
 	return stepView(
 		part,
@@ -99,9 +85,9 @@ function timeView(part: Step, running: boolean): View | null {
 	);
 }
 
-function calculateView(part: Step, running: boolean): View | null {
+function calculateView(part: ToolPart, running: boolean): View | null {
 	if (part.name !== "calculate") return null;
-	const { expression } = part.input as { expression?: string };
+	const { expression } = parseJson<{ expression?: string }>(part.args) ?? {};
 	const what = expression ? ` ${expression}` : "";
 	return stepView(
 		part,
@@ -113,7 +99,7 @@ function calculateView(part: Step, running: boolean): View | null {
 	);
 }
 
-function accountView(part: Step, running: boolean): View | null {
+function accountView(part: ToolPart, running: boolean): View | null {
 	const what = ACCOUNT_SETTINGS.get(part.name);
 	if (!what) return null;
 	const result = parseAccountResult(part.result);
@@ -132,7 +118,7 @@ function accountView(part: Step, running: boolean): View | null {
 	);
 }
 
-function deleteView(part: Step, running: boolean): View | null {
+function deleteView(part: ToolPart, running: boolean): View | null {
 	if (part.name !== DELETE_CHAT_TOOL) return null;
 	return stepView(part, running, <TrashIcon />, {
 		running: "Deleting this chat",
@@ -144,9 +130,9 @@ function deleteView(part: Step, running: boolean): View | null {
 type Source = { url: string; title?: string };
 type WebResult = { results?: Source[]; pages?: Source[]; error?: string };
 
-function searchView(part: Step, running: boolean): View | null {
+function searchView(part: ToolPart, running: boolean): View | null {
 	if (part.name !== "web_search") return null;
-	const { query } = part.input as { query?: string };
+	const { query } = parseJson<{ query?: string }>(part.args) ?? {};
 	const result = parseJson<WebResult>(part.result);
 	const what = query ? `“${query}”` : "the web";
 	const label = part.failed
@@ -159,9 +145,9 @@ function searchView(part: Step, running: boolean): View | null {
 	return { icon: <GlobeIcon />, label, pulse: part.result === undefined && running, body: sourceList(result?.results) };
 }
 
-function readPageView(part: Step, running: boolean): View | null {
+function readPageView(part: ToolPart, running: boolean): View | null {
 	if (part.name !== "read_webpage") return null;
-	const { urls } = part.input as { urls?: string[] };
+	const { urls } = parseJson<{ urls?: string[] }>(part.args) ?? {};
 	const result = parseJson<WebResult>(part.result);
 	const count = (n: number) => (n === 1 ? "1 page" : `${n} pages`);
 	const label = part.failed
@@ -194,9 +180,9 @@ function sourceList(sources: Source[] | undefined) {
 
 // Its name in words ("get_stock_price" → "get stock price"). The raw input and
 // output are for whoever builds the app, so they show in development only.
-function otherView(part: Step, running: boolean): View {
+function otherView(part: ToolPart, running: boolean): View {
 	const name = part.name.replaceAll("_", " ");
-	const hasInput = Object.keys(part.input).length > 0;
+	const hasInput = part.args && part.args !== "{}";
 	return stepView(
 		part,
 		running,
@@ -204,7 +190,7 @@ function otherView(part: Step, running: boolean): View {
 		{ running: `Running ${name}`, done: `Used ${name}`, notDone: `Did not run ${name}` },
 		process.env.NODE_ENV === "development" && (
 			<div className="mt-2 flex flex-col gap-2 rounded-xl bg-code p-3 font-mono text-xs wrap-break-word text-muted">
-				<span className="whitespace-pre-wrap">input: {hasInput ? JSON.stringify(part.input) : "none"}</span>
+				<span className="whitespace-pre-wrap">input: {hasInput ? part.args : "none"}</span>
 				<span className="whitespace-pre-wrap">output: {part.result}</span>
 			</div>
 		),
