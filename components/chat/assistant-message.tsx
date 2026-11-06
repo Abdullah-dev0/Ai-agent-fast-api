@@ -6,22 +6,41 @@ import { CheckIcon, CopyIcon } from "./icons";
 import { MARKDOWN, MarkdownText } from "./markdown";
 import { ToolCall } from "./tool-call";
 
-type Props = { messages: ChatMessage[]; streaming: boolean; latest: boolean; waiting: string[] };
+type Props = {
+	messages: ChatMessage[];
+	streaming: boolean;
+	latest: boolean;
+	waiting: string[];
+	// How long the model thought for this reply, and whether it is thinking now.
+	seconds?: number;
+	reasoning: boolean;
+};
 
 // One reply: the assistant messages useChat made for it (a new one per tool round).
 // Memoized on those messages, so older replies skip re-rendering (and re-parsing
 // their markdown) while a newer one streams.
-export const AssistantMessage = memo(function AssistantMessage({ messages, streaming, latest, waiting }: Props) {
+export const AssistantMessage = memo(function AssistantMessage({
+	messages,
+	streaming,
+	latest,
+	waiting,
+	seconds,
+	reasoning,
+}: Props) {
 	const parts = messages.flatMap((m) => m.parts);
 	// A tool's result is its own part, often in a later message than its call.
 	const results = new Map(parts.flatMap((p) => (p.type === "tool-result" ? [[p.toolCallId, p] as const] : [])));
 	const text = parts.flatMap((p) => (p.type === "text" ? [p.content] : [])).join("\n\n");
 	// The reply is not over while a tool waits for the user's OK.
 	const paused = parts.some((p) => p.type === "tool-call" && waiting.includes(p.id));
-	const thinking = streaming && parts.at(-1)?.type === "thinking";
 	return (
 		<div className="group/reply flex flex-col gap-3 leading-7">
-			{thinking && <p className="animate-pulse text-sm text-muted">Thinking…</p>}
+			{/* Like ChatGPT: that the model thought and for how long, never what. */}
+			{(reasoning || !!seconds) && (
+				<p className={`text-sm text-muted ${reasoning ? "animate-pulse" : ""}`}>
+					{reasoning ? "Thinking…" : `Thought for ${seconds}s`}
+				</p>
+			)}
 			{parts.map((part, i) => {
 				if (part.type === "text" && part.content)
 					return (
@@ -64,6 +83,8 @@ function sameReply(a: Props, b: Props) {
 		a.streaming === b.streaming &&
 		a.latest === b.latest &&
 		a.waiting === b.waiting &&
+		a.seconds === b.seconds &&
+		a.reasoning === b.reasoning &&
 		a.messages.length === b.messages.length &&
 		a.messages.every((m, i) => m === b.messages[i])
 	);

@@ -196,9 +196,10 @@ reason at all may reject the setting.
 ChatGPT, the page shows only that the model thought and for how long, never the
 text: some providers send their raw reasoning, not a summary. So the text never
 leaves the server: `main.py` drops `REASONING_MESSAGE_CONTENT` events and the
-reasoning messages in `MESSAGES_SNAPSHOT`. The page shows no reasoning time
-("Thought for 4s"): the snapshot replaces useChat's messages, reasoning included,
-when a reply ends.
+reasoning messages in `MESSAGES_SNAPSHOT`. The page times the reasoning from its
+start and end events (`useAgentChat`, keyed by the user message each reply answers)
+and shows one line per reply: "Thinking…", then "Thought for 4s". A reloaded chat
+has no timing, so the line is left out.
 
 ## Long chats
 

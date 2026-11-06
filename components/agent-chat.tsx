@@ -54,6 +54,8 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		loading,
 		running,
 		thinking,
+		thoughts,
+		reasoningFor,
 		error: replyError,
 		send,
 		answer,
@@ -187,7 +189,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 				}}
 				className="min-h-0 flex-1 overflow-y-auto">
 				<div className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-4 pt-4 pb-8">
-					{turns.map((turn) =>
+					{turns.map((turn, i) =>
 						turn[0].role === "user" ? (
 							<div
 								key={turn[0].id}
@@ -201,10 +203,19 @@ export function AgentChat({ threadId }: { threadId: string }) {
 								streaming={running && turn === last}
 								latest={turn === last}
 								waiting={waiting}
+								// Keyed by the user message the reply answers (useAgentChat).
+								seconds={thoughts.get(turns[i - 1]?.[0].id ?? "")}
+								reasoning={!!reasoningFor && reasoningFor === turns[i - 1]?.[0].id}
 							/>
 						),
 					)}
-					{thinking && <span className="size-3.5 animate-pulse rounded-full bg-foreground" />}
+					{/* Before the reply has anything to show: "Thinking…" if the model reasons. */}
+					{thinking &&
+						(reasoningFor ? (
+							<p className="animate-pulse text-sm text-muted">Thinking…</p>
+						) : (
+							<span className="size-3.5 animate-pulse rounded-full bg-foreground" />
+						))}
 
 					{approvals.length > 0 && (
 						<div className="flex flex-col gap-4 rounded-2xl bg-surface p-3 pl-4">
