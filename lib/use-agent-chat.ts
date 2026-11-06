@@ -64,9 +64,12 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	// the answers: `approvals` lists only the calls still waiting for one.
 	const [decisions, setDecisions] = useState<ReadonlyMap<string, boolean>>(new Map());
 	const approvals = useMemo(() => {
-		const waiting = toApprovals(chat.interrupts as readonly AgentInterrupt[]).filter((a) => !decisions.has(a.toolCallId));
+		const waiting = toApprovals(chat.interrupts as readonly AgentInterrupt[]).filter(
+			(a) => !decisions.has(a.toolCallId),
+		);
 		return waiting.length ? waiting : NO_APPROVALS;
 	}, [chat.interrupts, decisions]);
+
 	useEffect(() => {
 		lastUser.current = messages.findLast((m) => m.role === "user")?.id;
 	}, [messages]);
