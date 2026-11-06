@@ -67,7 +67,9 @@ if not MODEL_NAME:
 
 # Settings only some providers have. Any other provider gets the defaults below.
 # timeout: give up on one call after 60 s instead of waiting forever. OpenRouter's
-# is in milliseconds.
+# is in milliseconds. Gemini gets 180 s: its SDK sends the timeout to Google as a
+# server deadline (X-Server-Timeout), and a call that thinks hard over a long page
+# from read_webpage can pass 60 s, which ends it with 504 DEADLINE_EXCEEDED.
 # include_thoughts: Gemini also returns summaries of its reasoning. The AG-UI
 # adapter streams them as REASONING events; main.py passes on only their start
 # and end, so the page shows "Thinking…" and "Thought for 4s", not the text.
@@ -75,7 +77,7 @@ if not MODEL_NAME:
 # stream_usage: OpenAI only reports token counts on a stream when asked. Without
 # them no token_usage row is saved, so the monthly limit would never stop the chat.
 PROVIDER_SETTINGS: dict[str, dict] = {
-    "google_genai": {"include_thoughts": True},
+    "google_genai": {"include_thoughts": True, "timeout": 180},
     "openrouter": {"timeout": 60_000},
     "openai": {"stream_usage": True},
 }
