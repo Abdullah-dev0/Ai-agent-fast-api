@@ -2,7 +2,7 @@
 
 **Aragon**, a LangChain agent (Gemini by default, see "Changing the model"; twelve tools, web search included) served
 by FastAPI over AG-UI. The
-Next.js app's `/agent` page talks to it with our own React hook,
+Next.js app's `/agent` page talks to it with TanStack AI's `useChat`, wrapped in
 `useAgentChat` (`lib/use-agent-chat.ts`).
 
 ## Run it
@@ -27,7 +27,7 @@ Then, in the project root, `npm run dev`, sign in and open **Agent**.
 | `account_tools.py` | `update_my_profile` and `set_token_budget`: change the signed-in user's own display name and monthly token limit, after approval. See "Tools that change your data". |
 | `agent.py` | The agent: LangChain's `create_agent`, its name and system prompt (with today's date), and `HumanInTheLoopMiddleware` for the approval. Also the AG-UI wrapper. |
 | `main.py` | The API: `ag-ui-langgraph`'s endpoint to run the agent, plus history and clear. |
-| `history.py` | Turns a saved thread into the messages the page shows after a reload, in the same shape `useAgentChat` builds from the live stream. |
+| `history.py` | Turns a saved thread into the messages the page shows after a reload, in TanStack AI's message shape, the one `useChat` builds from the live stream. |
 
 ## How one message travels
 
@@ -58,19 +58,21 @@ runs shows only what is saved so far.
 
 ## The page's side (`lib/use-agent-chat.ts`)
 
-- **Send:** an AG-UI `RunAgentInput` with the `threadId`, a new `runId` and
-  **only the new message**. The checkpointer already has the conversation, and
-  the adapter adds any message it has not saved yet.
-- **Read:** text, reasoning and tool events become the parts of one assistant
-  message per reply (`text`, `reasoning`, `tool`); step and state events are
-  ignored.
-- **Tool arguments:** the adapter sends no `TOOL_CALL_ARGS` for Gemini (its
-  first chunk holds the tool's name and arguments together), so the hook takes
-  them from the `MESSAGES_SNAPSHOT` at the end of the run. Nothing else is read
-  from the snapshot.
-- **Stop:** aborts the request.
-- **Load:** `GET /agent?threadId=` on mount. `history.py` returns the same
-  message shape, so a reloaded chat looks like a live one.
+TanStack AI's `useChat` (`@tanstack/ai-react`) reads the AG-UI stream as it is:
+text, tool calls and results, and the end-of-run `MESSAGES_SNAPSHOT` (which also
+fills in what Gemini does not stream, like tool arguments). The hook adds:
+
+- **Send:** a fetch wrapper (`agentFetch`) sends **only the new message**, with the
+  thinking level in `state`. useChat would send the whole conversation, but the
+  checkpointer already has it, and an old message that differs from its saved copy
+  would make ag-ui-langgraph rewind the thread. (Sending it all also saved replies
+  twice: their ids on the page differ from the saved ones.)
+- **Read:** useChat starts a new assistant message after each tool round; the page
+  (`toTurns` in `components/agent-chat.tsx`) shows those as one reply.
+- **Load:** `GET /agent?threadId=` on mount, then `setMessages`. `history.py` returns
+  useChat's message shape, so a reloaded chat looks like a live one.
+- **Context meter:** the `context_usage` CUSTOM event, through `onCustomEvent`.
+- **Stop:** useChat's `stop`, which aborts the request.
 
 ## Approvals
 
@@ -81,8 +83,10 @@ runs shows only what is saved so far.
 2. The page shows Approve / Deny. The answer is a new run with AG-UI's `resume`
    field: `[{ interruptId, status: "resolved", payload: { type: "approve" | "reject" } }]`.
    The adapter passes the payload to the middleware as `Command(resume=...)`.
-   AG-UI requires one `resume` to answer every open interrupt, so the page
-   answers all of them with one decision (two at once is rare).
+   AG-UI requires one `resume` to answer every open interrupt, so the page sends
+   it once every approval has an answer. TanStack's own approvals only work with
+   interrupts its own server made (these arrive "unbound"), so the hook sends the
+   answers with its raw `resumeInterruptsUnsafe`.
 3. Deny: the tool does not run, and Gemini is told so. Approve: the tool runs,
    and when the reply ends the page calls `DELETE /agent` and clears the screen.
 
@@ -91,7 +95,7 @@ A waiting approval is saved by the checkpointer, so after a reload
 `RUN_FINISHED`) and the buttons come back.
 
 A denied call streams no result (the middleware answers without running the
-tool), so the page labels it "Not run" until a reload shows the reason.
+tool); the end-of-run snapshot brings it, and the page says the step did not happen.
 
 ## Tools that change your data (`account_tools.py`)
 
@@ -192,10 +196,9 @@ reason at all may reject the setting.
 ChatGPT, the page shows only that the model thought and for how long, never the
 text: some providers send their raw reasoning, not a summary. So the text never
 leaves the server: `main.py` drops `REASONING_MESSAGE_CONTENT` events and the
-reasoning messages in `MESSAGES_SNAPSHOT`. The page times the reasoning from
-its start and end events and shows one line per reply: "Thinking…", then
-"Thought for 4s". A reloaded chat has no timing, so `history.py` sends no
-reasoning parts and the line is left out.
+reasoning messages in `MESSAGES_SNAPSHOT`. The page shows no reasoning time
+("Thought for 4s"): the snapshot replaces useChat's messages, reasoning included,
+when a reply ends.
 
 ## Long chats
 

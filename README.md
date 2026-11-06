@@ -20,7 +20,7 @@ npm run dev                 # http://localhost:3000 (starts the agent server too
 | `app/(app)/layout.tsx` + `components/sidebar.tsx` | The shell: new chat, chat list, usage link, user menu |
 | `app/(app)/agent/[id]/page.tsx` | One chat; the page checks it is yours (`chats.id` is the agent's thread id) |
 | `components/agent-chat.tsx` | The chat UI: markdown replies, approvals, tool calls, composer |
-| `lib/use-agent-chat.ts` | Our own hook that streams AG-UI events from the agent server |
+| `lib/use-agent-chat.ts` | TanStack AI's `useChat` on the agent server's AG-UI stream, plus the saved chat and approvals |
 | `lib/chat-types.ts` | The chat's shared types (messages, parts, approvals, thinking levels) |
 | `app/(app)/usage/page.tsx` + `lib/dal.ts` | Token usage over 30 days, from the `token_usage` table |
 | `lib/actions.ts` | Server actions: new chat, rename-on-first-message, delete chat |
@@ -30,5 +30,5 @@ npm run dev                 # http://localhost:3000 (starts the agent server too
 ## Python agent (agent-server/)
 
 A LangGraph agent with Gemini and tools, served by FastAPI, used by the
-`/agent` page through our own `useAgentChat` hook. See
+`/agent` page through TanStack AI's `useChat` (`useAgentChat`). See
 [agent-server/README.md](agent-server/README.md) for how it works and how to run it.
