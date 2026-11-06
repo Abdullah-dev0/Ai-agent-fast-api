@@ -36,7 +36,7 @@ from history import to_ui_messages
 # Reuse the Next.js app's .env: GEMINI_API_KEY and DATABASE_URL live there.
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from agent import build_agui_agent, build_graph, latest_context_usage  # noqa: E402  (needs the env vars loaded first)
+from agent import build_agui_agent, build_graph  # noqa: E402  (needs the env vars loaded first)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -95,6 +95,10 @@ async def run_agent(input_data: RunAgentInput, request: Request):
     encoder = EventEncoder(accept=request.headers.get("accept"))
     # One copy per request: the adapter keeps per-run state on the instance.
     agent = request.app.state.agent.clone()
+    # useChat sends a message's extra data (sendMessage's body) in forwardedProps;
+    # the agent reads the thinking level from its state (ChatState in agent.py).
+    if level := (input_data.forwarded_props or {}).get("thinkingLevel"):
+        input_data = input_data.model_copy(update={"state": {**(input_data.state or {}), "thinking_level": level}})
 
     async def events():
         try:
@@ -118,18 +122,28 @@ def health():
 
 @app.get("/agent")
 async def chat_history(threadId: str, request: Request):
-    """No login check: anyone who can reach this server and knows a thread id
+    """The saved chat, in the shape useChat's `persistence: true` loads it in
+    (TanStack AI's ChatHydrationResult). It may add limit/before for paging;
+    the whole chat is always sent.
+
+    No login check: anyone who can reach this server and knows a thread id
     can read it. Fine on 127.0.0.1, not on a public server."""
     config = {"configurable": {"thread_id": threadId}}
     state = await request.app.state.graph.aget_state(config)
     pending = [i for task in state.tasks for i in task.interrupts]
-    messages = state.values.get("messages", [])
     return {
-        "messages": to_ui_messages(messages),
-        "context": latest_context_usage(messages),
-        # Approvals still waiting for an answer, so a reloaded page shows them
-        # again. Same AG-UI shape as the interrupts in a live RUN_FINISHED.
-        "interrupts": [lg_interrupt_to_agui(i).model_dump(by_alias=True, exclude_none=True) for i in pending],
+        "messages": to_ui_messages(state.values.get("messages", [])),
+        "activeRun": None,  # a reply runs inside its POST request: none to rejoin
+        # Approvals still waiting for an answer, so a reloaded page shows them again.
+        # useChat needs a run id with them; LangGraph saves none, so this names the
+        # checkpoint the run paused at (the adapter resumes from the latest anyway).
+        "interrupts": {
+            "runId": state.config["configurable"]["checkpoint_id"],
+            "pending": [lg_interrupt_to_agui(i).model_dump(by_alias=True, exclude_none=True) for i in pending],
+        }
+        if pending
+        else None,
+        "page": {"truncated": False},
     }
 
 

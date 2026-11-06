@@ -44,6 +44,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	const [input, setInput] = useState("");
 	const [thinkingLevel, setThinkingLevel] = useState(savedThinking);
 	const [deleting, startDelete] = useTransition();
+	const [deleteError, setDeleteError] = useState<string>();
 	// The user's pick per waiting approval (by id), until all have one and it is sent.
 	const [decisions, setDecisions] = useState<ReadonlyMap<string, boolean>>(new Map());
 	const {
@@ -53,11 +54,10 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		loading,
 		running,
 		thinking,
-		error,
+		error: replyError,
 		send,
 		answer,
 		stop,
-		clear,
 	} = useAgentChat({
 		url: AGENT_URL,
 		threadId,
@@ -77,9 +77,14 @@ export function AgentChat({ threadId }: { threadId: string }) {
 		if (el && atBottom.current) el.scrollTo({ top: el.scrollHeight });
 	}, [messages, thinking, approvals, loading]);
 
-	// The thread first: if that fails, the chat stays in the list.
+	const error = deleteError ?? replyError?.message;
+
+	// The thread first (DELETE /agent in main.py): if that fails, the chat stays in
+	// the list. Then deleteChat removes the chat's row and leaves the page.
 	async function removeChat() {
-		if (await clear()) await deleteChat(threadId);
+		const res = await fetch(`${AGENT_URL}?threadId=${encodeURIComponent(threadId)}`, { method: "DELETE" });
+		if (!res.ok) return setDeleteError(`Could not delete the chat (${res.status})`);
+		await deleteChat(threadId);
 	}
 
 	// Each approval gets its own answer. The run resumes once every one has one.
@@ -152,7 +157,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 			<div className="mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center gap-8 px-4">
 				<h2 className="text-center text-3xl font-semibold tracking-tight">What can I help with?</h2>
 				<div className="w-full">{composer}</div>
-				{error && <p className="text-sm text-danger">{error.message}</p>}
+				{error && <p className="text-sm text-danger">{error}</p>}
 			</div>
 		);
 
@@ -256,7 +261,7 @@ export function AgentChat({ threadId }: { threadId: string }) {
 						</div>
 					)}
 
-					{error && <p className="text-sm text-danger">{error.message}</p>}
+					{error && <p className="text-sm text-danger">{error}</p>}
 				</div>
 			</div>
 

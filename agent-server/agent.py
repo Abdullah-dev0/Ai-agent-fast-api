@@ -179,12 +179,6 @@ def context_usage(message: AIMessage) -> dict:
     }
 
 
-def latest_context_usage(messages: list[AnyMessage]) -> dict | None:
-    """For GET /agent, so a reloaded page shows the same number. None: nothing measured yet."""
-    last = next((m for m in reversed(messages) if isinstance(m, AIMessage) and m.usage_metadata), None)
-    return context_usage(last) if last else None
-
-
 # Old tool results (mostly web pages) are the biggest part of a long chat. Once the
 # conversation passes about 30,000 tokens, the model gets a short note in place of
 # all but the 3 newest results. Only the copy sent to the model changes: the saved
