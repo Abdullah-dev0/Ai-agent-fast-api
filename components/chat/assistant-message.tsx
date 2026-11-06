@@ -78,10 +78,6 @@ export const AssistantMessage = memo(function AssistantMessage({
 				}
 				return null;
 			})}
-			{/* After a tool step the reply waits on the model again: show that it works. */}
-			{streaming && !paused && (parts.at(-1)?.type === "tool-call" || parts.at(-1)?.type === "tool-result") && (
-				<span className="size-3.5 animate-pulse rounded-full bg-foreground" />
-			)}
 			{!streaming && !paused && text && (
 				// Like ChatGPT: older replies show this row on hover. Touch screens,
 				// which cannot hover, always show it.
