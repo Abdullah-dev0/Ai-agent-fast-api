@@ -59,7 +59,14 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 		onError: (e) => console.error("Agent run failed:", e),
 	});
 	const { messages, sendMessage, resumeInterruptsUnsafe, stop, isLoading } = chat;
-	const approvals = useMemo(() => toApprovals(chat.interrupts as readonly AgentInterrupt[]), [chat.interrupts]);
+	// The user's answer per tool call (true: approved). TanStack keeps an interrupt
+	// until the resumed run ends, since answer() goes around it, so the hook keeps
+	// the answers: `approvals` lists only the calls still waiting for one.
+	const [decisions, setDecisions] = useState<ReadonlyMap<string, boolean>>(new Map());
+	const approvals = useMemo(() => {
+		const waiting = toApprovals(chat.interrupts as readonly AgentInterrupt[]).filter((a) => !decisions.has(a.toolCallId));
+		return waiting.length ? waiting : NO_APPROVALS;
+	}, [chat.interrupts, decisions]);
 	useEffect(() => {
 		lastUser.current = messages.findLast((m) => m.role === "user")?.id;
 	}, [messages]);
@@ -73,20 +80,23 @@ export function useAgentChat({ url, threadId }: { url: string; threadId: string 
 	// One answer for every waiting approval: AG-UI resumes all open interrupts at once.
 	// TanStack resumes only interrupts its own server made, so this is its raw resume.
 	const answer = useCallback(
-		(approved: boolean) =>
-			resumeInterruptsUnsafe(
+		(approved: boolean) => {
+			setDecisions((m) => new Map([...m, ...approvals.map((a) => [a.toolCallId, approved] as const)]));
+			return resumeInterruptsUnsafe(
 				approvals.map((a) => ({
 					interruptId: a.id,
 					status: "resolved" as const,
 					payload: { type: approved ? "approve" : "reject" },
 				})),
-			),
+			);
+		},
 		[approvals, resumeInterruptsUnsafe],
 	);
 
 	return {
 		messages,
 		approvals,
+		decisions,
 		context,
 		loading: chat.isHydrating,
 		running: isLoading,

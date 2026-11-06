@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { DELETE_CHAT_TOOL } from "@/lib/agent-tools";
 import { deleteChat, touchChat } from "@/lib/actions";
@@ -45,12 +45,10 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	const [thinkingLevel, setThinkingLevel] = useState(savedThinking);
 	const [deleting, startDelete] = useTransition();
 	const [deleteError, setDeleteError] = useState<string>();
-	// The answer just given, shown at once while the server resumes. Tied to the
-	// approvals it answered, so it is gone when they are.
-	const [answered, setAnswered] = useState<{ to: unknown; approved: boolean }>();
 	const {
 		messages,
 		approvals,
+		decisions,
 		context,
 		loading,
 		running,
@@ -67,9 +65,6 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	});
 	// The run is paused until the user answers: a new message would not fit.
 	const paused = approvals.length > 0;
-	// The tool calls waiting for an answer. Memoized: a new array on every render
-	// would make every AssistantMessage (a memo) re-render on every streamed token.
-	const waiting = useMemo(() => approvals.map((a) => a.toolCallId), [approvals]);
 
 	// Follow the reply as it streams, but only while the user is at the bottom:
 	// scrolling up to read stops the following.
@@ -91,18 +86,21 @@ export function AgentChat({ threadId }: { threadId: string }) {
 	}
 
 	// One answer for every waiting approval (two at once is rare). Not in a
-	// transition: React would hold back the hook's updates (the card clearing,
-	// `running`) until the whole reply and the refresh were done.
-	async function decide(approved: boolean) {
-		setAnswered({ to: approvals, approved });
-		const deletes = approvals.some((a) => a.name === DELETE_CHAT_TOOL);
-		await answer(approved);
-		if (!approved) return;
-		// The tool deleted the chat on the server: leave it and update the list.
-		if (deletes) return deleteChat(threadId);
-		// The tool may have changed what server components show (name, limit).
-		router.refresh();
-	}
+	// transition: React would hold back the hook's updates (the step changing,
+	// `running`) until the whole reply and the refresh were done. A stable function,
+	// so replies (memos) do not re-render on every streamed token.
+	const decide = useCallback(
+		async (approved: boolean) => {
+			const deletes = approvals.some((a) => a.name === DELETE_CHAT_TOOL);
+			await answer(approved);
+			if (!approved) return;
+			// The tool deleted the chat on the server: leave it and update the list.
+			if (deletes) return deleteChat(threadId);
+			// The tool may have changed what server components show (name, limit).
+			router.refresh();
+		},
+		[approvals, answer, threadId, router],
+	);
 
 	function submit() {
 		const text = input.trim();
@@ -190,7 +188,9 @@ export function AgentChat({ threadId }: { threadId: string }) {
 								messages={turn}
 								streaming={running && turn === last}
 								latest={turn === last}
-								waiting={waiting}
+								approvals={approvals}
+								decisions={decisions}
+								onAnswer={decide}
 								// Keyed by the user message the reply answers (useAgentChat).
 								seconds={thoughts.get(turns[i - 1]?.[0].id ?? "")}
 								reasoning={!!reasoningFor && reasoningFor === turns[i - 1]?.[0].id}
@@ -204,45 +204,6 @@ export function AgentChat({ threadId }: { threadId: string }) {
 						) : (
 							<span className="size-3.5 animate-pulse rounded-full bg-foreground" />
 						))}
-
-					{approvals.length > 0 && (
-						<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 rounded-2xl bg-surface p-3 pl-4">
-							<div className="flex min-w-0 flex-col gap-3 text-sm">
-								{approvals.map(({ id, card }) => (
-									<div key={id} className="flex flex-col gap-0.5">
-										<p className="font-medium">{card.title || "The agent needs your approval to continue."}</p>
-										{/* Detail lines, e.g. "Name: Abdullah → Abdul". */}
-										{card.details.map((line) => (
-											<p key={line} className="text-muted">
-												{line}
-											</p>
-										))}
-									</div>
-								))}
-							</div>
-							{answered?.to === approvals ? (
-								// Shown at once; the card goes when the reply continues.
-								<span className="shrink-0 text-sm text-muted">{answered.approved ? "Approved" : "Denied"}</span>
-							) : (
-								<div className="flex shrink-0 gap-2">
-									<button
-										type="button"
-										onClick={() => void decide(false)}
-										disabled={running}
-										className="rounded-full bg-hover px-4 py-1.5 text-sm hover:opacity-80 disabled:opacity-50">
-										Deny
-									</button>
-									<button
-										type="button"
-										onClick={() => void decide(true)}
-										disabled={running}
-										className="rounded-full bg-foreground px-4 py-1.5 text-sm font-medium text-background hover:opacity-85 disabled:opacity-50">
-										Approve
-									</button>
-								</div>
-							)}
-						</div>
-					)}
 
 					{error && <p className="text-sm text-danger">{error}</p>}
 				</div>

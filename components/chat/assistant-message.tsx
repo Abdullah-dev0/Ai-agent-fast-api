@@ -1,7 +1,8 @@
 "use client";
 
 import { memo, useState } from "react";
-import type { ChatMessage, ToolStep } from "@/lib/chat-types";
+import type { Approval, ChatMessage, ToolStep } from "@/lib/chat-types";
+import { ApprovalRequest } from "./approval-request";
 import { CheckIcon, CopyIcon } from "./icons";
 import { MARKDOWN, MarkdownText } from "./markdown";
 import { ToolCall } from "./tool-call";
@@ -10,7 +11,11 @@ type Props = {
 	messages: ChatMessage[];
 	streaming: boolean;
 	latest: boolean;
-	waiting: string[];
+	// Tool calls waiting for the user's OK, the answers given (by tool call id, true:
+	// approved), and how to answer (useAgentChat).
+	approvals: Approval[];
+	decisions: ReadonlyMap<string, boolean>;
+	onAnswer: (approved: boolean) => void;
 	// How long the model thought for this reply, and whether it is thinking now.
 	seconds?: number;
 	reasoning: boolean;
@@ -23,7 +28,9 @@ export const AssistantMessage = memo(function AssistantMessage({
 	messages,
 	streaming,
 	latest,
-	waiting,
+	approvals,
+	decisions,
+	onAnswer,
 	seconds,
 	reasoning,
 }: Props) {
@@ -31,8 +38,9 @@ export const AssistantMessage = memo(function AssistantMessage({
 	// A tool's result is its own part, often in a later message than its call.
 	const results = new Map(parts.flatMap((p) => (p.type === "tool-result" ? [[p.toolCallId, p] as const] : [])));
 	const text = parts.flatMap((p) => (p.type === "text" ? [p.content] : [])).join("\n\n");
+	const waitingFor = (id: string) => approvals.find((a) => a.toolCallId === id);
 	// The reply is not over while a tool waits for the user's OK.
-	const paused = parts.some((p) => p.type === "tool-call" && waiting.includes(p.id));
+	const paused = parts.some((p) => p.type === "tool-call" && waitingFor(p.id));
 	return (
 		<div className="group/reply flex flex-col gap-3 leading-7">
 			{/* Like ChatGPT: that the model thought and for how long, never what. */}
@@ -48,20 +56,30 @@ export const AssistantMessage = memo(function AssistantMessage({
 							<MarkdownText text={part.content} />
 						</div>
 					);
-				// The approval card under the reply already says what a waiting call asks.
-				if (part.type === "tool-call" && !waiting.includes(part.id)) {
+				if (part.type === "tool-call") {
+					// Waiting for the user: the request, with Approve / Deny.
+					const approval = waitingFor(part.id);
+					if (approval)
+						return <ApprovalRequest key={part.id} card={approval.card} onAnswer={onAnswer} disabled={streaming} />;
+					// Otherwise a step. Denied shows as not done at once; approved runs
+					// (its label pulses) until the server sends the result.
 					const result = results.get(part.id);
+					const denied = !result && decisions.get(part.id) === false;
 					const step: ToolStep = {
 						id: part.id,
 						name: part.name,
 						args: part.arguments,
-						result: typeof result?.content === "string" ? result.content : undefined,
-						failed: result?.state === "error",
+						result: denied ? "" : typeof result?.content === "string" ? result.content : undefined,
+						failed: denied || result?.state === "error",
 					};
 					return <ToolCall key={part.id} part={step} running={streaming} />;
 				}
 				return null;
 			})}
+			{/* After a tool step the reply waits on the model again: show that it works. */}
+			{streaming && !paused && (parts.at(-1)?.type === "tool-call" || parts.at(-1)?.type === "tool-result") && (
+				<span className="size-3.5 animate-pulse rounded-full bg-foreground" />
+			)}
 			{!streaming && !paused && text && (
 				// Like ChatGPT: older replies show this row on hover. Touch screens,
 				// which cannot hover, always show it.
@@ -82,7 +100,9 @@ function sameReply(a: Props, b: Props) {
 	return (
 		a.streaming === b.streaming &&
 		a.latest === b.latest &&
-		a.waiting === b.waiting &&
+		a.approvals === b.approvals &&
+		a.decisions === b.decisions &&
+		a.onAnswer === b.onAnswer &&
 		a.seconds === b.seconds &&
 		a.reasoning === b.reasoning &&
 		a.messages.length === b.messages.length &&
