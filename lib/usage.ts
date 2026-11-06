@@ -1,7 +1,7 @@
 // Pure helpers for the usage page: no database, no Next, so vitest can run them.
 
 /** US dollars per 1 million tokens. */
-export type Price = { input: number; output: number };
+type Price = { input: number; output: number };
 
 // Estimates, not an invoice. These are assumed list prices: check your provider's
 // price page and edit them. A model that is not here has no known price, and the
@@ -37,7 +37,7 @@ export function sumCosts(costs: (number | null)[]): { total: number; unpriced: b
 	return { total, unpriced };
 }
 
-export type BudgetStatus = {
+type BudgetStatus = {
 	limit: number;
 	used: number;
 	/** 0 to 1, capped at 1, for the progress bar. */
@@ -54,10 +54,10 @@ export function budgetStatus(used: number, limit: number): BudgetStatus {
 	return { limit, used, fraction, level };
 }
 
-export type ParsedBudget = { ok: true; limit: number | null } | { ok: false; error: string };
+type ParsedBudget = { ok: true; limit: number | null } | { ok: false; error: string };
 
-export const MIN_BUDGET = 1_000;
-export const MAX_BUDGET = 10_000_000_000;
+const MIN_BUDGET = 1_000;
+const MAX_BUDGET = 10_000_000_000;
 
 /** Reads the budget form field. An empty text field means "no limit" (limit: null); a missing field is an error, so it cannot remove a limit by accident. */
 export function parseBudget(raw: FormDataEntryValue | null): ParsedBudget {

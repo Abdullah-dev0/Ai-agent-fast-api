@@ -6,7 +6,7 @@ export const DELETE_CHAT_TOOL = "delete_chat_history";
 
 // What the account tools answer with: `_result()` in account_tools.py, as JSON.
 // Anything else (an old chat, a changed format) is null, and the page shows it raw.
-export type AccountResult = { changed: boolean; message: string };
+type AccountResult = { changed: boolean; message: string };
 
 export function parseAccountResult(text: string | undefined): AccountResult | null {
 	const value = parseObject(text);

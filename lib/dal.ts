@@ -6,7 +6,7 @@ import { auth } from "./auth";
 import { pool } from "./db";
 import { estimateCost, sumCosts } from "./usage";
 
-export type User = {
+type User = {
 	id: string;
 	name: string;
 	email: string;
@@ -21,7 +21,7 @@ export type Chat = { id: string; title: string | null };
  * The single entry point for "who is the current user?". cache() shares one
  * session lookup per request between everything that calls it.
  */
-export const getUser = cache(async (): Promise<User | null> => {
+const getUser = cache(async (): Promise<User | null> => {
 	const session = await auth.api.getSession({ headers: await headers() });
 	if (!session) return null;
 	const { id, name, email, image, createdAt } = session.user;
@@ -50,9 +50,9 @@ export async function getChat(id: string, userId: string): Promise<Chat | null> 
 	return rows[0] ?? null;
 }
 
-export type UsageDay = { day: string; input: number; output: number };
+type UsageDay = { day: string; input: number; output: number };
 // cost is null when the model's price is not in lib/usage.ts.
-export type UsageModel = {
+type UsageModel = {
 	provider: string;
 	model: string;
 	calls: number;
@@ -60,7 +60,7 @@ export type UsageModel = {
 	output: number;
 	cost: number | null;
 };
-export type Usage = {
+type Usage = {
 	totals: { calls: number; input: number; output: number };
 	/** Estimated dollars. `unpriced`: some model had no known price, so the total is a lower bound. */
 	cost: { total: number; unpriced: boolean };
@@ -104,7 +104,7 @@ export async function getUsage(userId: string, days = 30): Promise<Usage> {
 	};
 }
 
-export type ChatUsage = {
+type ChatUsage = {
 	id: string;
 	title: string | null;
 	/** False when the chat was deleted: its usage rows stay. */

@@ -18,9 +18,6 @@ export type ToolStep = { id: string; name: string; args?: string; result?: strin
 // agent-server/agent.py). limit is null when the model's limit is not known.
 export type ContextUsage = { used: number; limit: number | null };
 
-// What GET /agent returns (main.py): the saved chat and any approval still waiting.
-export type SavedChat = { messages: ChatMessage[]; context: ContextUsage | null; interrupts: AgentInterrupt[] };
-
 // How hard the model thinks before a reply: Gemini's levels (agent-server/agent.py).
 // A value, not only a type: the selector lists these, and ThinkingLevel comes from it.
 export const THINKING_LEVELS = ["minimal", "low", "medium", "high"] as const;
